@@ -1,0 +1,25 @@
+{
+  "name": "passable-hvac-card",
+  "version": "1.0.0",
+  "description": "Dynamic multi-system HVAC, heat pump, and comfort control card for Home Assistant with overshoot management, fan recirculation, runtime analytics, and air filter maintenance.",
+  "main": "passable-hvac-card.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GBear09/passable-hvac-card.git"
+  },
+  "keywords": [
+    "home-assistant",
+    "custom-card",
+    "hacs",
+    "hvac",
+    "climate",
+    "thermostat",
+    "heat-pump"
+  ],
+  "author": "GBear09",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/GBear09/passable-hvac-card/issues"
+  },
+  "homepage": "https://github.com/GBear09/passable-hvac-card#readme"
+}
