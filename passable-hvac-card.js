@@ -366,7 +366,7 @@ class PassableHvacCard extends LitElement {
     this._touchTarget = null;
   }
 
-  async _fetchHvacHistoryData(unitKey, climateId, outdoorTempId) {
+  async _fetchHvacHistoryData(unitKey, climateId, outdoorTempId, coolDailySensorId, heatDailySensorId, coolTodaySensorId, heatTodaySensorId) {
     if (!this.hass || !climateId) return;
 
     if (
@@ -377,23 +377,29 @@ class PassableHvacCard extends LitElement {
       return;
     }
 
-    const endTime = new Date();
-    const startTime = new Date(endTime.getTime() - 24 * 3600 * 1000);
-    const startIso = startTime.toISOString();
+    const now = new Date();
+    const endTime = now;
+    const startTime24h = new Date(endTime.getTime() - 24 * 3600 * 1000);
+    const start24hIso = startTime24h.toISOString();
     const endIso = endTime.toISOString();
 
-    const entities = [climateId, outdoorTempId].filter(Boolean);
+    // 10-day start aligned to local midnight 10 days ago
+    const start10d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 10, 0, 0, 0, 0);
+    const start10dIso = start10d.toISOString();
+
+    const timelineEntities = [climateId, outdoorTempId].filter(Boolean);
     let climateHistory = [];
     let outdoorHistory = [];
     let fetchedSuccess = false;
 
+    // 1. Fetch 24-hour timeline history for climate and outdoor temp
     if (typeof this.hass.callWS === "function") {
       try {
         const wsRes = await this.hass.callWS({
           type: "history/history_during_period",
-          start_time: startIso,
+          start_time: start24hIso,
           end_time: endIso,
-          entity_ids: entities,
+          entity_ids: timelineEntities,
           no_attributes: false,
         });
         if (wsRes && typeof wsRes === "object") {
@@ -407,8 +413,8 @@ class PassableHvacCard extends LitElement {
     }
 
     if (!fetchedSuccess && typeof this.hass.callApi === "function") {
-      const filterStr = entities.join(",");
-      const endpoint = `history/period/${encodeURIComponent(startIso)}?filter_entity_id=${encodeURIComponent(filterStr)}&end_time=${encodeURIComponent(endIso)}&minimal_response=0&no_attributes=0`;
+      const filterStr = timelineEntities.join(",");
+      const endpoint = `history/period/${encodeURIComponent(start24hIso)}?filter_entity_id=${encodeURIComponent(filterStr)}&end_time=${encodeURIComponent(endIso)}&minimal_response=0&no_attributes=0`;
       try {
         const historyRes = await this.hass.callApi("GET", endpoint);
         if (historyRes && Array.isArray(historyRes)) {
@@ -440,15 +446,82 @@ class PassableHvacCard extends LitElement {
     climateHistory = sortByTime(climateHistory);
     outdoorHistory = sortByTime(outdoorHistory);
 
+    // 2. Fetch 10-day daily statistics (recorder/statistics_during_period)
+    const statEntities = [coolDailySensorId, heatDailySensorId, coolTodaySensorId, heatTodaySensorId, outdoorTempId].filter(Boolean);
+    let statisticsData = {};
+    if (typeof this.hass.callWS === "function" && statEntities.length > 0) {
+      try {
+        const statsRes = await this.hass.callWS({
+          type: "recorder/statistics_during_period",
+          start_time: start10dIso,
+          end_time: endIso,
+          statistic_ids: statEntities,
+          period: "day",
+          types: ["change", "state", "mean", "min", "max", "sum"]
+        });
+        if (statsRes && typeof statsRes === "object") {
+          statisticsData = statsRes;
+        }
+      } catch (statsErr) {
+        console.warn("Home Assistant Statistics API error:", statsErr);
+      }
+    }
+
+    // 3. 10-Day outdoor temperature: if statistics didn't provide daily mean for outdoorTempId, fetch 10-day history for outdoorTempId
+    let outdoorHistory10d = [];
+    const hasOutdoorStats = outdoorTempId && statisticsData[outdoorTempId] && statisticsData[outdoorTempId].length > 0;
+    if (!hasOutdoorStats && outdoorTempId && typeof this.hass.callWS === "function") {
+      try {
+        const outRes = await this.hass.callWS({
+          type: "history/history_during_period",
+          start_time: start10dIso,
+          end_time: endIso,
+          entity_ids: [outdoorTempId],
+          significant_changes_only: true,
+          minimal_response: true
+        });
+        if (outRes && Array.isArray(outRes[outdoorTempId])) {
+          outdoorHistory10d = sortByTime(outRes[outdoorTempId]);
+        }
+      } catch (e) {
+        console.warn("Failed to fetch 10d outdoor history:", e);
+      }
+    }
+
+    // 4. Fallback: if neither coolDailySensorId nor heatDailySensorId returned statistics, fetch 10-day history for climateId
+    let climateHistory10d = [];
+    const hasCoolStats = coolDailySensorId && statisticsData[coolDailySensorId] && statisticsData[coolDailySensorId].length > 0;
+    const hasHeatStats = heatDailySensorId && statisticsData[heatDailySensorId] && statisticsData[heatDailySensorId].length > 0;
+    if (!hasCoolStats && !hasHeatStats && climateId && typeof this.hass.callWS === "function") {
+      try {
+        const clim10Res = await this.hass.callWS({
+          type: "history/history_during_period",
+          start_time: start10dIso,
+          end_time: endIso,
+          entity_ids: [climateId],
+          significant_changes_only: true,
+          no_attributes: false
+        });
+        if (clim10Res && Array.isArray(clim10Res[climateId])) {
+          climateHistory10d = sortByTime(clim10Res[climateId]);
+        }
+      } catch (e) {
+        console.warn("Failed to fetch 10d climate history:", e);
+      }
+    }
+
     if (!this._hvacHistoryCache) this._hvacHistoryCache = {};
     this._hvacHistoryCache[unitKey] = {
       fetchedAt: Date.now(),
-      startTime: startTime.getTime(),
+      startTime: startTime24h.getTime(),
       endTime: endTime.getTime(),
       climateId,
       outdoorTempId,
       climateHistory,
-      outdoorHistory
+      outdoorHistory,
+      statisticsData,
+      outdoorHistory10d,
+      climateHistory10d
     };
     this.requestUpdate();
   }
@@ -771,13 +844,15 @@ class PassableHvacCard extends LitElement {
 
     const coolTodaySensorId = sysConfig.cool_today || c[`${unitKey}_cool_today`] || `sensor.hvac_${unitKey}_cooling_today`;
     const heatTodaySensorId = sysConfig.heat_today || c[`${unitKey}_heat_today`] || `sensor.hvac_${unitKey}_heating_today`;
+    const coolDailySensorId = sysConfig.cool_daily || c[`${unitKey}_cool_daily`] || `sensor.hvac_${unitKey}_cooling_daily`;
+    const heatDailySensorId = sysConfig.heat_daily || c[`${unitKey}_heat_daily`] || `sensor.hvac_${unitKey}_heating_daily`;
 
     const coolTodayObj = this._getEntity(coolTodaySensorId) || this._getEntity(`sensor.hvac_${unitKey}_cooling_runtime_today`);
     const heatTodayObj = this._getEntity(heatTodaySensorId) || this._getEntity(`sensor.hvac_${unitKey}_heating_runtime_today`);
 
     const liveCoolToday = (coolTodayObj && coolTodayObj.state && !isNaN(parseFloat(coolTodayObj.state)))
       ? parseFloat(parseFloat(coolTodayObj.state).toFixed(1))
-      : (unitKey === "upstairs" ? 4.8 : 5.5);
+      : 0.0;
 
     const liveHeatToday = (heatTodayObj && heatTodayObj.state && !isNaN(parseFloat(heatTodayObj.state)))
       ? parseFloat(parseFloat(heatTodayObj.state).toFixed(1))
@@ -792,25 +867,49 @@ class PassableHvacCard extends LitElement {
     const graphMode = this._hvacGraphMode || "multiday";
 
     const getOutdoorTempNum = (obj) => {
-      if (!obj) return 78.2;
+      if (!obj) return null;
       if (obj.attributes && obj.attributes.temperature !== undefined && obj.attributes.temperature !== null && !isNaN(parseFloat(obj.attributes.temperature))) {
         return parseFloat(obj.attributes.temperature);
       }
       if (obj.state && !isNaN(parseFloat(obj.state))) {
         return parseFloat(obj.state);
       }
-      return 78.2;
+      return null;
     };
-    const liveOutdoorTempStr = getOutdoorTempNum(outdoorTempObj).toFixed(1);
+    const liveOutdoorTemp = getOutdoorTempNum(outdoorTempObj);
+    const liveOutdoorTempStr = liveOutdoorTemp !== null ? liveOutdoorTemp.toFixed(1) : "--";
 
     // Trigger History REST API / WS fetch if missing or stale (>30s)
     const cachedHistory = (this._hvacHistoryCache && this._hvacHistoryCache[unitKey]) ? this._hvacHistoryCache[unitKey] : null;
     if (!cachedHistory || Date.now() - cachedHistory.fetchedAt > 30000) {
-      this._fetchHvacHistoryData(unitKey, climateId, outdoorTempId);
+      this._fetchHvacHistoryData(unitKey, climateId, outdoorTempId, coolDailySensorId, heatDailySensorId, coolTodaySensorId, heatTodaySensorId);
     }
 
     const outdoorTimeline = cachedHistory ? cachedHistory.outdoorHistory : [];
     const climateTimeline = cachedHistory ? cachedHistory.climateHistory : [];
+    const statisticsData = cachedHistory ? (cachedHistory.statisticsData || {}) : {};
+    const outdoorHistory10d = cachedHistory ? (cachedHistory.outdoorHistory10d || []) : [];
+    const climateHistory10d = cachedHistory ? (cachedHistory.climateHistory10d || []) : [];
+
+    // Helper: Normalize state item from HA WebSocket or REST API
+    const normalizeState = (item) => {
+      if (!item) return null;
+      const state = item.state !== undefined ? item.state : item.s;
+      const attributes = item.attributes !== undefined ? item.attributes : (item.a || {});
+      
+      let timeMs = 0;
+      if (item.last_updated !== undefined) {
+        timeMs = typeof item.last_updated === "number" ? (item.last_updated > 1e11 ? item.last_updated : item.last_updated * 1000) : new Date(item.last_updated).getTime();
+      } else if (item.lu !== undefined) {
+        timeMs = typeof item.lu === "number" ? (item.lu > 1e11 ? item.lu : item.lu * 1000) : new Date(item.lu).getTime();
+      } else if (item.last_changed !== undefined) {
+        timeMs = typeof item.last_changed === "number" ? (item.last_changed > 1e11 ? item.last_changed : item.last_changed * 1000) : new Date(item.last_changed).getTime();
+      } else if (item.lc !== undefined) {
+        timeMs = typeof item.lc === "number" ? (item.lc > 1e11 ? item.lc : item.lc * 1000) : new Date(item.lc).getTime();
+      }
+
+      return { state, attributes, timeMs };
+    };
 
     // Calculate actual average outdoor temperature today from outdoorTimeline if available
     let calculatedTodayAvgOutdoor = null;
@@ -832,42 +931,173 @@ class PassableHvacCard extends LitElement {
       }
     }
 
-    const todayOutdoorAvgStr = calculatedTodayAvgOutdoor || (parseFloat(liveOutdoorTempStr) > 80 ? (parseFloat(liveOutdoorTempStr) - 7.5).toFixed(1) : liveOutdoorTempStr);
+    const todayOutdoorAvgStr = calculatedTodayAvgOutdoor || liveOutdoorTempStr;
+
+    // Helper: Local date key YYYY-MM-DD
+    const getLocalDateKey = (ts) => {
+      const d = (ts instanceof Date) ? ts : new Date(ts);
+      if (isNaN(d.getTime())) return "";
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    };
+
+    // Index daily statistics arrays by local date key
+    const indexStatsByDate = (statArray) => {
+      const map = {};
+      if (!Array.isArray(statArray)) return map;
+      statArray.forEach((s) => {
+        if (!s || !s.start) return;
+        const key = getLocalDateKey(s.start);
+        if (key) map[key] = s;
+      });
+      return map;
+    };
+
+    const coolDailyMap = indexStatsByDate(statisticsData[coolDailySensorId]);
+    const heatDailyMap = indexStatsByDate(statisticsData[heatDailySensorId]);
+    const coolTodayMap = indexStatsByDate(statisticsData[coolTodaySensorId]);
+    const heatTodayMap = indexStatsByDate(statisticsData[heatTodaySensorId]);
+    const outdoorStatsMap = indexStatsByDate(statisticsData[outdoorTempId]);
+
+    // Group 10-day outdoor history samples by local date key for average calculation
+    const outdoorHistoryByDate = {};
+    (outdoorHistory10d || []).forEach((item) => {
+      const norm = normalizeState(item);
+      if (!norm || norm.timeMs === 0) return;
+      const key = getLocalDateKey(norm.timeMs);
+      let temp = null;
+      if (norm.attributes && norm.attributes.temperature !== undefined && !isNaN(parseFloat(norm.attributes.temperature))) {
+        temp = parseFloat(norm.attributes.temperature);
+      } else if (norm.state !== undefined && !isNaN(parseFloat(norm.state))) {
+        temp = parseFloat(norm.state);
+      }
+      if (temp !== null) {
+        if (!outdoorHistoryByDate[key]) outdoorHistoryByDate[key] = [];
+        outdoorHistoryByDate[key].push(temp);
+      }
+    });
+
+    // If climateHistory10d fallback is used, calculate daily run durations in hours
+    const climateDailyDurations = {};
+    if (climateHistory10d && climateHistory10d.length > 0) {
+      for (let idx = 0; idx < climateHistory10d.length; idx++) {
+        const cur = normalizeState(climateHistory10d[idx]);
+        if (!cur) continue;
+        const nextTime = idx < climateHistory10d.length - 1 ? (normalizeState(climateHistory10d[idx + 1])?.timeMs || Date.now()) : Date.now();
+        const durationHours = Math.max(0, (nextTime - cur.timeMs) / 3600000);
+        const act = (cur.attributes?.hvac_action || cur.state || "").toLowerCase();
+        const isCool = act === "cooling" || act === "cool";
+        const isHeat = act === "heating" || act === "heat";
+        if (isCool || isHeat) {
+          const dateKey = getLocalDateKey(cur.timeMs);
+          if (!climateDailyDurations[dateKey]) climateDailyDurations[dateKey] = { coolHours: 0, heatHours: 0 };
+          if (isCool) climateDailyDurations[dateKey].coolHours += durationHours;
+          if (isHeat) climateDailyDurations[dateKey].heatHours += durationHours;
+        }
+      }
+    }
 
     // Compute 10 consecutive daily records ending on Today (0 to 9 days ago)
     const now = new Date();
     const historyDataRaw = Array.from({ length: 10 }, (_, i) => {
       const daysAgo = 9 - i;
-      const dateObj = new Date(now.getTime() - daysAgo * 86400000);
+      const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, 12, 0, 0);
+      const dateKey = getLocalDateKey(targetDate);
+
       const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      const dayNum = String(dateObj.getDate()).padStart(2, "0");
-      const monthStr = monthNames[dateObj.getMonth()];
+      const dayNum = String(targetDate.getDate()).padStart(2, "0");
+      const monthStr = monthNames[targetDate.getMonth()];
       const dayLabel = daysAgo === 0 ? "Today" : `${dayNum} ${monthStr}`;
 
       const cx = 45 + i * 28;
-      let cool, heat, avgTemp;
+      let cool = 0.0;
+      let heat = 0.0;
+      let avgTemp = todayOutdoorAvgStr;
 
-      if (isUpstairs) {
-        const upstairsCool = [1.2, 2.0, 4.2, 5.0, 3.5, 3.1, 2.4, 5.2, 5.8, liveCoolToday];
-        const upstairsTemps = ["71.8", "74.2", "78.6", "81.2", "76.5", "75.0", "73.8", "83.1", "85.4", todayOutdoorAvgStr];
-        cool = upstairsCool[i];
-        heat = daysAgo === 0 ? liveHeatToday : (isHeatingSeason ? (6.0 - cool * 0.5).toFixed(1) : 0.0);
-        avgTemp = upstairsTemps[i];
+      if (daysAgo === 0) {
+        cool = liveCoolToday;
+        heat = liveHeatToday;
+        avgTemp = todayOutdoorAvgStr;
       } else {
-        const downstairsCool = [0.8, 1.4, 3.4, 3.0, 2.6, 2.5, 2.0, 4.8, 5.2, liveCoolToday];
-        const downstairsTemps = ["70.1", "72.5", "74.2", "76.0", "73.2", "72.8", "71.5", "79.4", "81.0", todayOutdoorAvgStr];
-        cool = downstairsCool[i];
-        heat = daysAgo === 0 ? liveHeatToday : (isHeatingSeason ? (5.0 - cool * 0.4).toFixed(1) : 0.0);
-        avgTemp = downstairsTemps[i];
+        const coolStat = coolDailyMap[dateKey] || coolTodayMap[dateKey];
+        if (coolStat) {
+          if (coolStat.change !== undefined && coolStat.change !== null && !isNaN(parseFloat(coolStat.change))) {
+            cool = Math.max(0, parseFloat(coolStat.change));
+          } else if (coolStat.state !== undefined && coolStat.state !== null && !isNaN(parseFloat(coolStat.state))) {
+            cool = Math.max(0, parseFloat(coolStat.state));
+          } else if (coolStat.max !== undefined && coolStat.max !== null && !isNaN(parseFloat(coolStat.max))) {
+            cool = Math.max(0, parseFloat(coolStat.max));
+          }
+        } else if (climateDailyDurations[dateKey]) {
+          cool = climateDailyDurations[dateKey].coolHours;
+        }
+
+        const heatStat = heatDailyMap[dateKey] || heatTodayMap[dateKey];
+        if (heatStat) {
+          if (heatStat.change !== undefined && heatStat.change !== null && !isNaN(parseFloat(heatStat.change))) {
+            heat = Math.max(0, parseFloat(heatStat.change));
+          } else if (heatStat.state !== undefined && heatStat.state !== null && !isNaN(parseFloat(heatStat.state))) {
+            heat = Math.max(0, parseFloat(heatStat.state));
+          } else if (heatStat.max !== undefined && heatStat.max !== null && !isNaN(parseFloat(heatStat.max))) {
+            heat = Math.max(0, parseFloat(heatStat.max));
+          }
+        } else if (climateDailyDurations[dateKey]) {
+          heat = climateDailyDurations[dateKey].heatHours;
+        }
+
+        const outStat = outdoorStatsMap[dateKey];
+        if (outStat && outStat.mean !== undefined && outStat.mean !== null && !isNaN(parseFloat(outStat.mean))) {
+          avgTemp = parseFloat(outStat.mean).toFixed(1);
+        } else if (outdoorHistoryByDate[dateKey] && outdoorHistoryByDate[dateKey].length > 0) {
+          const temps = outdoorHistoryByDate[dateKey];
+          const sum = temps.reduce((a, b) => a + b, 0);
+          avgTemp = (sum / temps.length).toFixed(1);
+        } else {
+          avgTemp = todayOutdoorAvgStr;
+        }
       }
+
+      cool = parseFloat((cool || 0).toFixed(1));
+      heat = parseFloat((heat || 0).toFixed(1));
 
       return { dayLabel, cool, heat, avgTemp, cx };
     });
 
+    // DYNAMIC RUNTIME Y-AXIS SCALE CALCULATION
+    const allRuntimes = historyDataRaw.map(d => isHeatingSeason ? parseFloat(d.heat) : parseFloat(d.cool));
+    const maxRecordedRuntime = Math.max(0, ...allRuntimes);
+
+    let maxGridHours = 2.0;
+    if (maxRecordedRuntime > 9.5) {
+      maxGridHours = Math.ceil(maxRecordedRuntime * 1.15 / 4) * 4;
+    } else if (maxRecordedRuntime > 7.5) {
+      maxGridHours = 10.0;
+    } else if (maxRecordedRuntime > 5.5) {
+      maxGridHours = 8.0;
+    } else if (maxRecordedRuntime > 3.5) {
+      maxGridHours = 6.0;
+    } else if (maxRecordedRuntime > 1.8) {
+      maxGridHours = 4.0;
+    } else if (maxRecordedRuntime > 0.8) {
+      maxGridHours = 2.0;
+    } else {
+      maxGridHours = 2.0;
+    }
+
+    const runtimeYLabels = {
+      top: maxGridHours.toFixed(maxGridHours >= 10 ? 0 : 1),
+      midHigh: (maxGridHours * 0.75).toFixed(1),
+      mid: (maxGridHours * 0.50).toFixed(1),
+      midLow: (maxGridHours * 0.25).toFixed(1),
+      bottom: "0.0"
+    };
+
     // Dynamic Y-Axis scale calculation for 10-day outdoor temperature curve
-    const barTemps = historyDataRaw.map(d => parseFloat(d.avgTemp));
-    const minBarTemp = Math.floor(Math.min(...barTemps) - 2);
-    const maxBarTemp = Math.ceil(Math.max(...barTemps) + 2);
+    const barTemps = historyDataRaw.map(d => parseFloat(d.avgTemp)).filter(t => !isNaN(t));
+    const minBarTemp = barTemps.length > 0 ? Math.floor(Math.min(...barTemps) - 2) : 60;
+    const maxBarTemp = barTemps.length > 0 ? Math.ceil(Math.max(...barTemps) + 2) : 90;
     const barTempSpan = Math.max(1, maxBarTemp - minBarTemp);
 
     const calcBarY = (tempVal) => {
@@ -922,25 +1152,6 @@ class PassableHvacCard extends LitElement {
       ? Math.min(totalChunks - 1, this._selectedHvacChunkIndex)
       : (totalChunks - 1); // Default to current moment (Now)
 
-    const normalizeState = (item) => {
-      if (!item) return null;
-      const state = item.state !== undefined ? item.state : item.s;
-      const attributes = item.attributes !== undefined ? item.attributes : (item.a || {});
-      
-      let timeMs = 0;
-      if (item.last_updated !== undefined) {
-        timeMs = typeof item.last_updated === "number" ? (item.last_updated > 1e11 ? item.last_updated : item.last_updated * 1000) : new Date(item.last_updated).getTime();
-      } else if (item.lu !== undefined) {
-        timeMs = typeof item.lu === "number" ? (item.lu > 1e11 ? item.lu : item.lu * 1000) : new Date(item.lu).getTime();
-      } else if (item.last_changed !== undefined) {
-        timeMs = typeof item.last_changed === "number" ? (item.last_changed > 1e11 ? item.last_changed : item.last_changed * 1000) : new Date(item.last_changed).getTime();
-      } else if (item.lc !== undefined) {
-        timeMs = typeof item.lc === "number" ? (item.lc > 1e11 ? item.lc : item.lc * 1000) : new Date(item.lc).getTime();
-      }
-
-      return { state, attributes, timeMs };
-    };
-
     // Helper: Find active state in history stream for a given timestamp
     const getStateAt = (timeline, targetMs) => {
       if (!timeline || timeline.length === 0) return null;
@@ -960,14 +1171,7 @@ class PassableHvacCard extends LitElement {
     const fallbackIndoor = (climate && climate.attributes && climate.attributes.current_temperature) ? climate.attributes.current_temperature : 72;
     const fallbackSetpoint = (climate && climate.attributes && (climate.attributes.temperature || climate.attributes.target_temp_low || climate.attributes.target_temp_high)) ? (climate.attributes.temperature || climate.attributes.target_temp_low || climate.attributes.target_temp_high) : 72;
 
-    let fallbackOutdoor = 75;
-    if (outdoorTempObj) {
-      if (outdoorTempObj.attributes && outdoorTempObj.attributes.temperature !== undefined && outdoorTempObj.attributes.temperature !== null && !isNaN(parseFloat(outdoorTempObj.attributes.temperature))) {
-        fallbackOutdoor = parseFloat(outdoorTempObj.attributes.temperature);
-      } else if (outdoorTempObj.state && !isNaN(parseFloat(outdoorTempObj.state))) {
-        fallbackOutdoor = parseFloat(outdoorTempObj.state);
-      }
-    }
+    let fallbackOutdoor = liveOutdoorTemp !== null ? liveOutdoorTemp : 72;
 
     // Generate timelineData points directly from Home Assistant Recorder History API
     const rawTimelineData = Array.from({ length: totalChunks }, (_, idx) => {
@@ -1516,40 +1720,47 @@ class PassableHvacCard extends LitElement {
                             <svg viewBox="0 0 340 195" style="width:100%; height:100%; overflow:visible;">
                               <!-- Horizontal Grid Lines & Y-Axis Labels -->
                               <line x1="30" y1="20" x2="310" y2="20" stroke="rgba(255,255,255,0.15)" stroke-dasharray="3 3"/>
-                              <text x="5" y="24" fill="#a1a1aa" font-size="10" font-weight="600">6.0</text>
+                              <text x="5" y="24" fill="#a1a1aa" font-size="10" font-weight="600">${runtimeYLabels.top}</text>
                               <text x="315" y="24" fill="#a1a1aa" font-size="10" font-weight="600">${barYGridLabels.top}</text>
 
                               <line x1="30" y1="55" x2="310" y2="55" stroke="rgba(255,255,255,0.12)" stroke-dasharray="3 3"/>
-                              <text x="5" y="59" fill="#a1a1aa" font-size="10" font-weight="600">4.5</text>
+                              <text x="5" y="59" fill="#a1a1aa" font-size="10" font-weight="600">${runtimeYLabels.midHigh}</text>
                               <text x="315" y="59" fill="#a1a1aa" font-size="10" font-weight="600">${barYGridLabels.midHigh}</text>
 
                               <line x1="30" y1="90" x2="310" y2="90" stroke="rgba(255,255,255,0.12)" stroke-dasharray="3 3"/>
-                              <text x="5" y="94" fill="#a1a1aa" font-size="10" font-weight="600">3.0</text>
+                              <text x="5" y="94" fill="#a1a1aa" font-size="10" font-weight="600">${runtimeYLabels.mid}</text>
                               <text x="315" y="94" fill="#a1a1aa" font-size="10" font-weight="600">${barYGridLabels.mid}</text>
 
                               <line x1="30" y1="125" x2="310" y2="125" stroke="rgba(255,255,255,0.12)" stroke-dasharray="3 3"/>
-                              <text x="5" y="129" fill="#a1a1aa" font-size="10" font-weight="600">1.5</text>
+                              <text x="5" y="129" fill="#a1a1aa" font-size="10" font-weight="600">${runtimeYLabels.midLow}</text>
                               <text x="315" y="129" fill="#a1a1aa" font-size="10" font-weight="600">${barYGridLabels.midLow}</text>
 
                               <line x1="30" y1="160" x2="310" y2="160" stroke="rgba(255,255,255,0.3)"/>
-                              <text x="5" y="164" fill="#a1a1aa" font-size="10" font-weight="600">0.0</text>
+                              <text x="5" y="164" fill="#a1a1aa" font-size="10" font-weight="600">${runtimeYLabels.bottom}</text>
                               <text x="315" y="164" fill="#a1a1aa" font-size="10" font-weight="600">${barYGridLabels.bottom}</text>
 
                               <!-- 10 Daily Cooling/Heating Bars in SVG Namespace with Click Event -->
-                              ${historyData.map((d, i) => svg`
-                                <rect
-                                  x="${d.cx - 7}"
-                                  y="${160 - Math.max(4, Math.min(140, ((isHeatingSeason ? parseFloat(d.heat) : parseFloat(d.cool)) / 6.0) * 140))}"
-                                  width="14"
-                                  height="${Math.max(4, Math.min(140, ((isHeatingSeason ? parseFloat(d.heat) : parseFloat(d.cool)) / 6.0) * 140))}"
-                                  rx="3"
-                                  fill="${isHeatingSeason ? '#ea580c' : '#2563eb'}"
-                                  stroke="${selectedDayIdx === i ? '#ffffff' : '#38bdf8'}"
-                                  stroke-width="${selectedDayIdx === i ? 2.5 : 1.2}"
-                                  style="cursor:pointer;"
-                                  @click=${() => this._selectHvacHistoryDay(i)}
-                                />
-                              `)}
+                              ${historyData.map((d, i) => {
+                                const runtimeVal = isHeatingSeason ? parseFloat(d.heat) : parseFloat(d.cool);
+                                const rawHeight = (runtimeVal / maxGridHours) * 140;
+                                const barHeight = runtimeVal > 0 ? Math.max(4, Math.min(140, rawHeight)) : 2;
+                                const barY = 160 - barHeight;
+                                return svg`
+                                  <rect
+                                    x="${d.cx - 7}"
+                                    y="${barY}"
+                                    width="14"
+                                    height="${barHeight}"
+                                    rx="3"
+                                    fill="${isHeatingSeason ? '#ea580c' : '#2563eb'}"
+                                    fill-opacity="${runtimeVal > 0 ? 1 : 0.35}"
+                                    stroke="${selectedDayIdx === i ? '#ffffff' : '#38bdf8'}"
+                                    stroke-width="${selectedDayIdx === i ? 2.5 : (runtimeVal > 0 ? 1.2 : 0.6)}"
+                                    style="cursor:pointer;"
+                                    @click=${() => this._selectHvacHistoryDay(i)}
+                                  />
+                                `;
+                              })}
 
                               <!-- Outdoor Temperature Curved Overlay Line -->
                               <path
@@ -2479,6 +2690,38 @@ class PassableHvacCardEditor extends LitElement {
                     .value=${sys.filter_life || undefined}
                     .label=${"Max Filter Life Helper Number"}
                     @value-changed=${(e) => this._updateHVACSystemConfig(index, "filter_life", e.detail.value)}
+                  ></ha-selector>
+
+                  <ha-selector
+                    .hass=${this.hass}
+                    .selector=${{ entity: { domain: ["sensor"] } }}
+                    .value=${sys.cool_daily || undefined}
+                    .label=${"Daily Cooling Runtime Sensor (Optional)"}
+                    @value-changed=${(e) => this._updateHVACSystemConfig(index, "cool_daily", e.detail.value)}
+                  ></ha-selector>
+
+                  <ha-selector
+                    .hass=${this.hass}
+                    .selector=${{ entity: { domain: ["sensor"] } }}
+                    .value=${sys.heat_daily || undefined}
+                    .label=${"Daily Heating Runtime Sensor (Optional)"}
+                    @value-changed=${(e) => this._updateHVACSystemConfig(index, "heat_daily", e.detail.value)}
+                  ></ha-selector>
+
+                  <ha-selector
+                    .hass=${this.hass}
+                    .selector=${{ entity: { domain: ["sensor"] } }}
+                    .value=${sys.cool_today || undefined}
+                    .label=${"Today Cooling Runtime Sensor (Optional)"}
+                    @value-changed=${(e) => this._updateHVACSystemConfig(index, "cool_today", e.detail.value)}
+                  ></ha-selector>
+
+                  <ha-selector
+                    .hass=${this.hass}
+                    .selector=${{ entity: { domain: ["sensor"] } }}
+                    .value=${sys.heat_today || undefined}
+                    .label=${"Today Heating Runtime Sensor (Optional)"}
+                    @value-changed=${(e) => this._updateHVACSystemConfig(index, "heat_today", e.detail.value)}
                   ></ha-selector>
                 </div>
               `
