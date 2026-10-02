@@ -5,6 +5,19 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-10-02
+
+### Added
+- **Remote Room Sensors Integration**: Support for remote room temperature sensors tied to each thermostat (automatic discovery for Ecobee thermostats from `available_sensors` and `active_sensors`, with optional manual entity configuration).
+- **Remote Sensor Main Card Strip**: Displays compact room temperature pills on the main card by default with active comfort-profile participation indicators.
+- **Remote Room Sensors Modal Grid**: Dedicated room sensor grid in the Setpoints popup tab displaying room name, temperature, and participation state.
+- **Sensor Visibility Options**: Added global and per-system `hide_sensors_on_card` toggles in both the visual editor and card configuration.
+
+### Changed
+- **Clickable Unit Blocks**: Clicking anywhere on an HVAC system unit block now opens the controls and analytics popup for that system.
+- **Removed Separate Cog Button**: Replaced the separate far-right action button with full unit block touch targeting.
+- **Static Notification Chips**: Removed pulse animations from "Replace Filter", filter warning chips, and alert indicator dots for clean, unobtrusive status reporting.
+
 ## [1.0.3] - 2026-10-02
 
 ### Changed

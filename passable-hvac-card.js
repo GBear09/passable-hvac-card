@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.0.3
+ * Version: 1.0.4
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.0.3";
+const CARD_VERSION = "1.0.4";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -584,6 +584,115 @@ class PassableHvacCard extends LitElement {
     `;
   }
 
+  _getSystemSensors(unitKey, sysConfig = {}, defaultClimateId = null) {
+    if (!this.hass) return [];
+    const c = this.config;
+
+    // 1. Explicit configuration per system or global card
+    const explicit = sysConfig.sensors || (c.sensors && c.sensors[unitKey]);
+
+    // Resolve climate entity for Ecobee attributes
+    const climateKey = sysConfig.climate || c[`${unitKey}_climate`] || defaultClimateId;
+    const climateState = this.hass.states[climateKey] || 
+                         this.hass.states[`climate.${unitKey}`] || 
+                         (defaultClimateId ? this.hass.states[defaultClimateId] : null);
+
+    const activeSensors = (climateState && climateState.attributes && Array.isArray(climateState.attributes.active_sensors))
+      ? climateState.attributes.active_sensors
+      : [];
+    const availableSensors = (climateState && climateState.attributes && Array.isArray(climateState.attributes.available_sensors))
+      ? climateState.attributes.available_sensors
+      : [];
+
+    if (Array.isArray(explicit) && explicit.length > 0) {
+      return explicit.map((item) => {
+        const entId = typeof item === "string" ? item : item.entity;
+        const stateObj = this.hass.states[entId];
+        if (!stateObj) return null;
+        let cleanName = (typeof item === "object" && item.name) ? item.name : stateObj.attributes.friendly_name || entId;
+        cleanName = cleanName.replace(/ecobee sensor/gi, "")
+                             .replace(/temperature/gi, "")
+                             .replace(/[()]/g, "")
+                             .trim();
+        const rawTemp = parseFloat(stateObj.state);
+        const temp = !isNaN(rawTemp) ? Math.round(rawTemp * 10) / 10 : stateObj.state;
+        const unit = stateObj.attributes.unit_of_measurement || "°";
+        const isActive = activeSensors.some((act) => {
+          const actClean = act.replace(/ecobee sensor/gi, "").replace(/[()]/g, "").trim().toLowerCase();
+          return actClean.includes(cleanName.toLowerCase()) || cleanName.toLowerCase().includes(actClean);
+        });
+        return {
+          entityId: entId,
+          name: (typeof item === "object" && item.name) ? item.name : (stateObj.attributes.friendly_name || entId),
+          cleanName: cleanName || entId,
+          temp,
+          unit,
+          isActive,
+          stateObj
+        };
+      }).filter(Boolean);
+    }
+
+    // 2. Auto-discovery from available_sensors attribute
+    if (Array.isArray(availableSensors) && availableSensors.length > 0) {
+      const discovered = [];
+      const allStates = Object.values(this.hass.states);
+      const tempSensors = allStates.filter((s) =>
+        s.entity_id.startsWith("sensor.") &&
+        (s.attributes.device_class === "temperature" ||
+         s.attributes.unit_of_measurement === "°F" ||
+         s.attributes.unit_of_measurement === "°C")
+      );
+
+      availableSensors.forEach((sensorStr) => {
+        let cleanName = sensorStr.replace(/\([0-9a-fA-F]{20,}\)/g, "").trim();
+        const isMainThermostat = cleanName.toLowerCase().includes("thermostat");
+        if (isMainThermostat) return; // Keep remote room sensors only
+
+        cleanName = cleanName.replace(/ecobee sensor/gi, "").replace(/[()]/g, "").trim();
+
+        const match = tempSensors.find((s) => {
+          const fn = (s.attributes.friendly_name || "").toLowerCase();
+          const eid = s.entity_id.toLowerCase();
+          const cn = cleanName.toLowerCase();
+          const simplifiedCn = cn.replace(/[^a-z0-9]/g, "");
+          const simplifiedEid = eid.replace(/[^a-z0-9]/g, "");
+          const simplifiedFn = fn.replace(/[^a-z0-9]/g, "");
+          return (
+            fn.includes(cn) ||
+            simplifiedFn.includes(simplifiedCn) ||
+            simplifiedEid.includes(simplifiedCn)
+          );
+        });
+
+        if (match) {
+          const rawTemp = parseFloat(match.state);
+          const temp = !isNaN(rawTemp) ? Math.round(rawTemp * 10) / 10 : match.state;
+          const unit = match.attributes.unit_of_measurement || "°";
+          const isActive = activeSensors.some((act) => {
+            const actClean = act.replace(/ecobee sensor/gi, "").replace(/[()]/g, "").trim().toLowerCase();
+            return actClean.includes(cleanName.toLowerCase()) || cleanName.toLowerCase().includes(actClean);
+          });
+          discovered.push({
+            entityId: match.entity_id,
+            name: match.attributes.friendly_name || cleanName,
+            cleanName: cleanName || match.entity_id,
+            temp,
+            unit,
+            isActive,
+            stateObj: match
+          });
+        }
+      });
+
+      if (discovered.length > 0) {
+        return discovered;
+      }
+    }
+
+    return [];
+  }
+
   _renderHvacUnitCard(unitKey, title, icon, defaultClimate, sysConfig = {}) {
     const c = this.config;
     const climateId = sysConfig.climate || c[`${unitKey}_climate_hk`] || c[`${unitKey}_climate`] || defaultClimate;
@@ -601,6 +710,8 @@ class PassableHvacCard extends LitElement {
     const coolOvershoot = this._getEntity(coolOvershootId);
     const filterHours = this._getEntity(filterHoursId);
     const filterLife = this._getEntity(filterLifeId);
+
+    const systemSensors = this._getSystemSensors(unitKey, sysConfig, climateId);
 
     const hvacAction = climate.attributes.hvac_action || climate.state || "idle";
     const currentTemp = climate.attributes.current_temperature ?? "--";
@@ -686,8 +797,13 @@ class PassableHvacCard extends LitElement {
       : (preset && preset.state !== "unavailable" && preset.state !== "unknown" ? preset.state : null);
 
     return html`
-      <div class="hvac-unit-card ${stateClass}" style="${dynamicCardStyle}">
-        <!-- Left Section: Title Line with Inline Icon + Side-by-Side Meta Chips -->
+      <div
+        class="hvac-unit-card ${stateClass}"
+        style="${dynamicCardStyle}"
+        @click=${() => this._showHvacModal(unitKey, "setpoints")}
+        title="Tap to open controls & analytics for ${unitTitle}"
+      >
+        <!-- Left Section: Title Line with Inline Icon + Side-by-Side Meta Chips + Remote Sensors -->
         <div class="hvac-compact-left">
           <div class="hvac-compact-title-group">
             <span class="hvac-compact-name" style="display:inline-flex; align-items:center;">
@@ -697,7 +813,7 @@ class PassableHvacCard extends LitElement {
 
             <div class="hvac-compact-meta">
               <span class="status-chip ${stateClass}">
-                <ha-icon icon="${stateIcon}" class="${stateClass === 'active-fan' ? 'hvac-spin-icon' : isAnimated ? 'hvac-pulse-icon' : ''}" style="--mdc-icon-size:11px; margin-right:3px;"></ha-icon>
+                <ha-icon icon="${stateIcon}" class="${stateClass === 'active-fan' ? 'hvac-spin-icon' : ''}" style="--mdc-icon-size:11px; margin-right:3px;"></ha-icon>
                 ${stateLabel}
               </span>
               ${activePresetName
@@ -729,28 +845,33 @@ class PassableHvacCard extends LitElement {
                   `
                 : ""}
             </div>
+
+            ${(!c.hide_sensors_on_card && !sysConfig.hide_sensors_on_card && systemSensors.length > 0)
+              ? html`
+                  <div class="hvac-remote-sensors-strip">
+                    ${systemSensors.map((s) => html`
+                      <span
+                        class="hvac-sensor-pill ${s.isActive ? 'active' : ''}"
+                        @click=${(e) => { e.stopPropagation(); this._showMoreInfo(s.entityId); }}
+                        title="${s.name}: ${s.temp}${s.unit} ${s.isActive ? '(Participating in comfort profile)' : '(Standby)'}"
+                      >
+                        ${s.isActive ? html`<span class="hvac-sensor-active-dot"></span>` : ""}
+                        <span class="hvac-sensor-name">${s.cleanName}</span>
+                        <span class="hvac-sensor-temp">${s.temp}°</span>
+                      </span>
+                    `)}
+                  </div>
+                `
+              : ""}
           </div>
         </div>
 
         <!-- Center Section: Current Temp + Target Setpoint (with inline Overshoot offset) + Humidity -->
-        <div class="hvac-compact-center" @click=${() => this._showMoreInfo(climateId)}>
+        <div class="hvac-compact-center">
           <div class="hvac-compact-temp">${currentTemp}°</div>
           <div class="hvac-compact-subtemp">
             Set ${targetTemp}°${activeOvershootOffset ? ` (${activeOvershootOffset})` : ""} • ${humidity}% RH
           </div>
-        </div>
-
-        <!-- Right Section: Single Consolidated Controls & Analytics Settings Button -->
-        <div class="hvac-compact-actions">
-          <button
-            class="hvac-icon-btn ${isFilterExpired ? 'expired' : isFilterWarning ? 'warning' : ''}"
-            style="position:relative;"
-            title="Open HVAC Controls & Analytics"
-            @click=${() => this._showHvacModal(unitKey, "setpoints")}
-          >
-            <ha-icon icon="mdi:cog-outline"></ha-icon>
-            ${isFilterAlert ? html`<span class="filter-alert-dot ${isFilterExpired ? 'expired' : 'warning'}"></span>` : ""}
-          </button>
         </div>
       </div>
     `;
@@ -841,6 +962,8 @@ class PassableHvacCard extends LitElement {
     const heatThresh = this._getEntity(heatThreshId);
     const filterHours = this._getEntity(filterHoursId);
     const filterLife = this._getEntity(filterLifeId);
+
+    const modalSensors = this._getSystemSensors(unitKey, sysConfig, climateId);
 
     const coolTodaySensorId = sysConfig.cool_today || c[`${unitKey}_cool_today`] || `sensor.hvac_${unitKey}_cooling_today`;
     const heatTodaySensorId = sysConfig.heat_today || c[`${unitKey}_heat_today`] || `sensor.hvac_${unitKey}_heating_today`;
@@ -1477,6 +1600,32 @@ class PassableHvacCard extends LitElement {
                       `
                     : ""}
 
+                  ${modalSensors.length > 0 ? html`
+                    <div class="divider"></div>
+                    <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.08)); border:1px solid var(--divider-color, rgba(255, 255, 255, 0.08)); border-radius:14px; padding:12px; margin-bottom:12px;">
+                      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                        <div style="font-size:0.85rem; font-weight:700; color:var(--primary-text-color); display:flex; align-items:center; gap:6px;">
+                          <ha-icon icon="mdi:home-thermometer-outline" style="--mdc-icon-size:18px; color:var(--primary-color);"></ha-icon>
+                          <span>Remote Room Sensors</span>
+                        </div>
+                        <span style="font-size:0.68rem; font-weight:600; padding:2px 6px; border-radius:6px; background:rgba(3,169,244,0.15); color:var(--primary-color);">${modalSensors.length} Connected</span>
+                      </div>
+                      <div class="hvac-modal-sensors-grid">
+                        ${modalSensors.map((s) => html`
+                          <div class="hvac-modal-sensor-tile ${s.isActive ? 'active' : ''}" @click=${() => this._showMoreInfo(s.entityId)} title="${s.name} (Tap for details)">
+                            <div class="sensor-tile-top">
+                              <span class="sensor-tile-name">${s.cleanName}</span>
+                              <span class="sensor-tile-status ${s.isActive ? 'active' : 'standby'}">
+                                ${s.isActive ? "Active" : "Standby"}
+                              </span>
+                            </div>
+                            <div class="sensor-tile-temp">${s.temp}°</div>
+                          </div>
+                        `)}
+                      </div>
+                    </div>
+                  ` : ""}
+
                   <div class="divider"></div>
                   <h4 style="margin:4px 0 10px 0; color:var(--primary-color); display:flex; align-items:center; gap:6px;">
                     <ha-icon icon="mdi:thermometer-cog" style="--mdc-icon-size:18px;"></ha-icon>
@@ -2061,8 +2210,14 @@ class PassableHvacCard extends LitElement {
         justify-content: space-between;
         gap: 8px;
         border: 1px solid var(--divider-color, rgba(255,255,255,0.08));
-        transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+        transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
         min-height: 54px;
+        cursor: pointer;
+      }
+      .hvac-unit-card:hover {
+        background: var(--secondary-background-color, rgba(128,128,128,0.18));
+        border-color: rgba(var(--rgb-primary-color, 3, 169, 244), 0.35);
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
       }
       .hvac-compact-left { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
       .hvac-compact-title-group { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -2071,7 +2226,113 @@ class PassableHvacCard extends LitElement {
       .hvac-mini-badge { font-size: 0.65rem; padding: 1px 5px; border-radius: 6px; background: rgba(0,0,0,0.3); color: var(--secondary-text-color); white-space: nowrap; }
       .hvac-mini-badge.overshoot { background: rgba(251, 146, 60, 0.2); color: #fb923c; }
 
-      .hvac-compact-center { display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; padding: 0 4px; flex-shrink: 0; }
+      /* REMOTE ROOM SENSORS */
+      .hvac-remote-sensors-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 4px;
+        align-items: center;
+      }
+      .hvac-sensor-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 1px 6px;
+        border-radius: 6px;
+        font-size: 0.68rem;
+        background: var(--card-background-color, rgba(128,128,128,0.1));
+        border: 1px solid var(--divider-color, rgba(255,255,255,0.08));
+        color: var(--secondary-text-color);
+        cursor: pointer;
+        transition: all 0.15s ease;
+        user-select: none;
+      }
+      .hvac-sensor-pill:hover {
+        background: var(--secondary-background-color, rgba(128,128,128,0.2));
+        border-color: var(--primary-color);
+        color: var(--primary-text-color);
+      }
+      .hvac-sensor-pill.active {
+        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.12);
+        border-color: rgba(var(--rgb-primary-color, 3, 169, 244), 0.35);
+        color: var(--primary-text-color);
+        font-weight: 500;
+      }
+      .hvac-sensor-active-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--success-color, #22c55e);
+        flex-shrink: 0;
+      }
+      .hvac-sensor-name {
+        white-space: nowrap;
+      }
+      .hvac-sensor-temp {
+        font-weight: 700;
+        color: var(--primary-text-color);
+      }
+
+      .hvac-modal-sensors-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+        gap: 8px;
+      }
+      .hvac-modal-sensor-tile {
+        background: var(--card-background-color, rgba(128, 128, 128, 0.06));
+        border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.08));
+        border-radius: 10px;
+        padding: 8px 10px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .hvac-modal-sensor-tile:hover {
+        border-color: var(--primary-color);
+        transform: translateY(-1px);
+      }
+      .hvac-modal-sensor-tile.active {
+        border-color: rgba(var(--rgb-primary-color, 3, 169, 244), 0.4);
+        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.08);
+      }
+      .sensor-tile-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 4px;
+      }
+      .sensor-tile-name {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--primary-text-color);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sensor-tile-status {
+        font-size: 0.6rem;
+        padding: 1px 4px;
+        border-radius: 4px;
+        font-weight: 600;
+      }
+      .sensor-tile-status.active {
+        background: rgba(34, 197, 94, 0.2);
+        color: #22c55e;
+      }
+      .sensor-tile-status.standby {
+        background: rgba(128, 128, 128, 0.15);
+        color: var(--secondary-text-color);
+      }
+      .sensor-tile-temp {
+        font-size: 1.15rem;
+        font-weight: 700;
+        color: var(--primary-text-color);
+      }
+
+      .hvac-compact-center { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 4px; flex-shrink: 0; }
       .hvac-compact-temp { font-size: 1.85rem; font-weight: 800; line-height: 0.9; color: var(--primary-text-color); letter-spacing: -0.03em; }
       .hvac-compact-subtemp { font-size: 0.65rem; color: var(--secondary-text-color); white-space: nowrap; margin-top: 1px; }
 
@@ -2110,16 +2371,6 @@ class PassableHvacCard extends LitElement {
         transform-origin: center center;
       }
 
-      @keyframes alert-pulse {
-        0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
-        70% { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
-        100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-      }
-      @keyframes warning-pulse {
-        0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
-        70% { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
-        100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
-      }
       .filter-alert-dot {
         position: absolute;
         top: -3px;
@@ -2129,25 +2380,21 @@ class PassableHvacCard extends LitElement {
         background-color: #ef4444;
         border-radius: 50%;
         border: 1px solid rgba(0,0,0,0.6);
-        animation: alert-pulse 1.8s infinite;
       }
       .filter-alert-dot.warning {
         background-color: #f59e0b;
-        animation: warning-pulse 1.8s infinite;
       }
       .hvac-mini-badge.alert-filter {
         background: rgba(239, 68, 68, 0.25);
         color: #ef4444;
         border: 1px solid rgba(239, 68, 68, 0.6);
         font-weight: 700;
-        animation: alert-pulse 2s infinite;
       }
       .hvac-mini-badge.warning-filter {
         background: rgba(245, 158, 11, 0.25);
         color: #f59e0b;
         border: 1px solid rgba(245, 158, 11, 0.6);
         font-weight: 700;
-        animation: warning-pulse 2s infinite;
       }
 
       .hvac-mode-btn {
@@ -2596,6 +2843,21 @@ class PassableHvacCardEditor extends LitElement {
           ></ha-switch>
         </div>
 
+        <!-- Hide Remote Sensors on Main Card Switch -->
+        <div class="form-group" style="display:flex; align-items:center; justify-content:space-between;">
+          <div>
+            <label class="form-label" style="margin:0;">Hide Remote Sensors on Main Card</label>
+            <p class="form-help" style="margin:2px 0 0 0; font-size:0.72rem; color:var(--secondary-text-color);">
+              Default shows remote room temperature sensors on card.
+            </p>
+          </div>
+          <ha-switch
+            .checked=${this.config.hide_sensors_on_card === true}
+            .configValue=${"hide_sensors_on_card"}
+            @change=${this._onFieldChange}
+          ></ha-switch>
+        </div>
+
         <div class="section-box">
           <h3>HVAC System Configuration</h3>
           <p class="form-help" style="margin:2px 0 8px 0; font-size:0.75rem; color:var(--secondary-text-color);">
@@ -2693,6 +2955,24 @@ class PassableHvacCardEditor extends LitElement {
             .value=${sys.climate || undefined}
             .label=${"Local Climate Entity (HomeKit)"}
             @value-changed=${(e) => this._updateHVACSystemConfig(index, "climate", e.detail.value)}
+          ></ha-selector>
+
+          <!-- Hide Remote Sensors for this system -->
+          <div class="form-group" style="display:flex; align-items:center; justify-content:space-between; margin-top:2px;">
+            <label class="form-label" style="font-size:0.8rem; margin:0;">Hide Sensors on Card for this System</label>
+            <ha-switch
+              .checked=${sys.hide_sensors_on_card === true}
+              @change=${(e) => this._updateHVACSystemConfig(index, "hide_sensors_on_card", e.target.checked)}
+            ></ha-switch>
+          </div>
+
+          <!-- Remote Temperature Sensors Selector -->
+          <ha-selector
+            .hass=${this.hass}
+            .selector=${{ entity: { domain: "sensor", device_class: "temperature", multiple: true } }}
+            .value=${sys.sensors || undefined}
+            .label=${"Remote Room Temperature Sensors (Auto-discovered if empty)"}
+            @value-changed=${(e) => this._updateHVACSystemConfig(index, "sensors", e.detail.value)}
           ></ha-selector>
 
           <!-- On-demand Manual Entity Override Toggle -->
