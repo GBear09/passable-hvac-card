@@ -1,6 +1,6 @@
 {
   "name": "passable-hvac-card",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Dynamic multi-system HVAC, heat pump, and comfort control card for Home Assistant with overshoot management, fan recirculation, runtime analytics, and air filter maintenance.",
   "main": "passable-hvac-card.js",
   "repository": {

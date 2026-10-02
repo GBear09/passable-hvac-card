@@ -5,6 +5,15 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-10-02
+
+### Added
+- **Option 5 Thermal Range Summary Pill**: Replaced cluttered multi-row sensor badges on the main card with an ultra-compact single badge displaying sensor count and thermal spread (e.g. `[4 Sensors: 71.3° – 74.1° ▾]`).
+- **Inline Expandable Sensor Tray**: Tapping the summary pill smoothly expands/collapses an inline tray displaying individual room temperature readings with participation dots (`Active` vs `Standby`).
+- **Start Sensors Expanded Toggle**: Added `sensors_start_expanded` configuration and visual editor switch (both globally and per-system) to control whether the tray is initially open or collapsed.
+- **Thermostat Sensor Filtering**: Automatically filters out redundant thermostat internal sensors (e.g. "Upstairs Thermostat") from the remote room list so only actual remote sensors are summarized. Added `exclude_thermostat_sensor` switch to override if desired.
+- **Intelligent Room Name Shortener**: Automatically strips repetitive boilerplate suffixes (`"Bedroom"`, `"'s Room"`, `"Room"`) for clean, instant recognition (e.g. "Master", "Maggie", "Max", "Madeleine").
+
 ## [1.0.4] - 2026-10-02
 
 ### Added
