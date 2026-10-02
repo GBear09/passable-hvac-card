@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.0.0
+ * Version: 1.0.2
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.0.2";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -2170,7 +2170,7 @@ class PassableHvacCard extends LitElement {
         transition: all 0.2s ease;
       }
       .hvac-tab-btn.active {
-        background: var(--card-background-color, #1c1c1e);
+        background: var(--card-background-color, #fff);
         color: var(--primary-color, #3b82f6) !important;
         font-weight: 700;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
@@ -2329,7 +2329,7 @@ class PassableHvacCard extends LitElement {
       }
 
       .popup-content {
-        background-color: var(--ha-card-background, var(--card-background-color, #1c1c1e));
+        background-color: var(--ha-card-background, var(--card-background-color, #fff));
         padding: 16px 20px 20px;
         border-radius: var(--ha-dialog-border-radius, var(--ha-card-border-radius, 24px));
         width: 100%;
@@ -2404,7 +2404,7 @@ class PassableHvacCard extends LitElement {
         background: rgba(128, 128, 128, 0.15);
       }
       .popup-tab.active-tab {
-        background: var(--card-background-color, #1c1c1e);
+        background: var(--card-background-color, #fff);
         color: var(--primary-color, #3b82f6);
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
       }
@@ -2839,5 +2839,6 @@ window.customCards.push({
   type: "passable-hvac-card",
   name: "Passable HVAC Card",
   preview: true,
+  documentationURL: "https://github.com/GBear09/passable-hvac-card",
   description: "Dynamic multi-system HVAC, heat pump, and comfort control card.",
 });
