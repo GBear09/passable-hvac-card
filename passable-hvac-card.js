@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.0.2
+ * Version: 1.0.3
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.0.2";
+const CARD_VERSION = "1.0.3";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -774,7 +774,7 @@ class PassableHvacCard extends LitElement {
                 <div class="step-controller-pill" style="padding:2px 8px;">
                   <ha-icon icon="mdi:fire" style="--mdc-icon-size:13px; color:#f97316; margin-right:2px;"></ha-icon>
                   <button class="pill-btn" style="padding:0 5px; font-size:1.1rem;" @click=${() => this._adjustNumberEntity(heatEntityId, -1)}>-</button>
-                  <span class="pill-value" style="font-size:1rem; font-weight:700; min-width:28px; text-align:center; color:#ffffff;">${Math.round(parseFloat(heatObj.state))}°</span>
+                  <span class="pill-value" style="font-size:1rem; font-weight:700; min-width:28px; text-align:center; color:var(--primary-text-color);">${Math.round(parseFloat(heatObj.state))}°</span>
                   <button class="pill-btn" style="padding:0 5px; font-size:1.1rem;" @click=${() => this._adjustNumberEntity(heatEntityId, 1)}>+</button>
                 </div>
               `
@@ -784,7 +784,7 @@ class PassableHvacCard extends LitElement {
                 <div class="step-controller-pill" style="padding:2px 8px;">
                   <ha-icon icon="mdi:snowflake" style="--mdc-icon-size:13px; color:#38bdf8; margin-right:2px;"></ha-icon>
                   <button class="pill-btn" style="padding:0 5px; font-size:1.1rem;" @click=${() => this._adjustNumberEntity(coolEntityId, -1)}>-</button>
-                  <span class="pill-value" style="font-size:1rem; font-weight:700; min-width:28px; text-align:center; color:#ffffff;">${Math.round(parseFloat(coolObj.state))}°</span>
+                  <span class="pill-value" style="font-size:1rem; font-weight:700; min-width:28px; text-align:center; color:var(--primary-text-color);">${Math.round(parseFloat(coolObj.state))}°</span>
                   <button class="pill-btn" style="padding:0 5px; font-size:1.1rem;" @click=${() => this._adjustNumberEntity(coolEntityId, 1)}>+</button>
                 </div>
               `
@@ -1484,7 +1484,7 @@ class PassableHvacCard extends LitElement {
                   </h4>
 
                   <!-- Group 1: Thermostat Specific Presets -->
-                  <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); border-radius:14px; padding:12px; margin-bottom:10px;">
+                  <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.08)); border:1px solid var(--divider-color, rgba(255, 255, 255, 0.08)); border-radius:14px; padding:12px; margin-bottom:10px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                       <div style="font-size:0.8rem; font-weight:700; color:var(--primary-text-color); display:flex; align-items:center; gap:6px;">
                         <ha-icon icon="mdi:home-thermometer" style="--mdc-icon-size:16px; color:var(--info-color, #38bdf8);"></ha-icon>
@@ -1499,7 +1499,7 @@ class PassableHvacCard extends LitElement {
                   </div>
 
                   <!-- Group 2: Global System Presets -->
-                  <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); border-radius:14px; padding:12px;">
+                  <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.08)); border:1px solid var(--divider-color, rgba(255, 255, 255, 0.08)); border-radius:14px; padding:12px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                       <div style="font-size:0.8rem; font-weight:700; color:var(--primary-text-color); display:flex; align-items:center; gap:6px;">
                         <ha-icon icon="mdi:earth" style="--mdc-icon-size:16px; color:#3b82f6;"></ha-icon>
@@ -1515,7 +1515,7 @@ class PassableHvacCard extends LitElement {
                   </div>
 
                   <!-- 2-COLUMN OVERSHOOT SETTINGS PANEL -->
-                  <div class="materials-section" style="padding:14px; margin-top:12px; background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.12); border-radius:16px;">
+                  <div class="materials-section" style="padding:14px; margin-top:12px; background:var(--secondary-background-color, rgba(128, 128, 128, 0.08)); border:1px solid var(--divider-color, rgba(255, 255, 255, 0.12)); border-radius:16px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                       <h4 style="margin:0; font-size:1rem; font-weight:700; color:var(--primary-text-color);">Overshoot Settings</h4>
                       <ha-icon icon="mdi:thermometer" style="--mdc-icon-size:20px; opacity:0.7;"></ha-icon>
@@ -1539,14 +1539,14 @@ class PassableHvacCard extends LitElement {
 
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
                       <!-- HEAT COLUMN -->
-                      <div style="background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:14px; padding:10px; display:flex; flex-direction:column; gap:8px;">
+                      <div style="background:var(--card-background-color, rgba(128, 128, 128, 0.05)); border:1px solid var(--divider-color, rgba(255, 255, 255, 0.08)); border-radius:14px; padding:10px; display:flex; flex-direction:column; gap:8px;">
                         <div style="display:flex; align-items:center; gap:6px; font-weight:700; font-size:0.9rem; color:#ea580c;">
                           <ha-icon icon="mdi:fire" style="--mdc-icon-size:16px;"></ha-icon>
                           <span>Heat</span>
                         </div>
 
                         <!-- Heat Threshold Box -->
-                        <div style="background:rgba(0,0,0,0.25); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
+                        <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.12)); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
                           <div style="display:flex; align-items:center; gap:6px; font-size:0.75rem; font-weight:600; color:var(--primary-text-color);">
                             <ha-icon icon="mdi:fire" style="--mdc-icon-size:14px; color:#ea580c;"></ha-icon>
                             <span>Threshold</span>
@@ -1559,7 +1559,7 @@ class PassableHvacCard extends LitElement {
                         </div>
 
                         <!-- Heat Amount Box -->
-                        <div style="background:rgba(0,0,0,0.25); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
+                        <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.12)); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
                           <div style="display:flex; align-items:center; gap:6px; font-size:0.75rem; font-weight:600; color:var(--primary-text-color);">
                             <ha-icon icon="mdi:fire" style="--mdc-icon-size:14px; color:#ea580c;"></ha-icon>
                             <span>Amount</span>
@@ -1573,14 +1573,14 @@ class PassableHvacCard extends LitElement {
                       </div>
 
                       <!-- COOL COLUMN -->
-                      <div style="background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:14px; padding:10px; display:flex; flex-direction:column; gap:8px;">
+                      <div style="background:var(--card-background-color, rgba(128, 128, 128, 0.05)); border:1px solid var(--divider-color, rgba(255, 255, 255, 0.08)); border-radius:14px; padding:10px; display:flex; flex-direction:column; gap:8px;">
                         <div style="display:flex; align-items:center; gap:6px; font-weight:700; font-size:0.9rem; color:#0284c7;">
                           <ha-icon icon="mdi:snowflake" style="--mdc-icon-size:16px;"></ha-icon>
                           <span>Cool</span>
                         </div>
 
                         <!-- Cool Threshold Box -->
-                        <div style="background:rgba(0,0,0,0.25); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
+                        <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.12)); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
                           <div style="display:flex; align-items:center; gap:6px; font-size:0.75rem; font-weight:600; color:var(--primary-text-color);">
                             <ha-icon icon="mdi:snowflake" style="--mdc-icon-size:14px; color:#0284c7;"></ha-icon>
                             <span>Threshold</span>
@@ -1593,7 +1593,7 @@ class PassableHvacCard extends LitElement {
                         </div>
 
                         <!-- Cool Amount Box -->
-                        <div style="background:rgba(0,0,0,0.25); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
+                        <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.12)); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
                           <div style="display:flex; align-items:center; gap:6px; font-size:0.75rem; font-weight:600; color:var(--primary-text-color);">
                             <ha-icon icon="mdi:snowflake" style="--mdc-icon-size:14px; color:#0284c7;"></ha-icon>
                             <span>Amount</span>
@@ -2150,8 +2150,24 @@ class PassableHvacCard extends LitElement {
         animation: warning-pulse 2s infinite;
       }
 
-      .hvac-mode-btn { background: rgba(255,255,255,0.1); border: none; color: var(--primary-text-color); padding: 5px 10px; border-radius: 8px; font-weight: 600; font-size: 0.75rem; cursor: pointer; }
-      .hvac-mode-btn.active { background: var(--primary-color, #86efac); color: #052e16 !important; font-weight: 800; box-shadow: 0 2px 6px rgba(0,0,0,0.25); }
+      .hvac-mode-btn {
+        background: var(--secondary-background-color, rgba(128, 128, 128, 0.15));
+        border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.08));
+        color: var(--primary-text-color);
+        padding: 5px 10px;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 0.75rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      .hvac-mode-btn.active {
+        background: var(--primary-color, #3b82f6);
+        color: var(--text-primary-color, var(--primary-text-color, #fff)) !important;
+        border-color: var(--primary-color, #3b82f6);
+        font-weight: 800;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+      }
       .global-preset-badge { display: flex; align-items: center; background: rgba(59, 130, 246, 0.2); border: 1px solid rgba(59, 130, 246, 0.4); color: #60a5fa; padding: 3px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; cursor: pointer; }
       
       .hvac-tab-btn {
@@ -2170,10 +2186,13 @@ class PassableHvacCard extends LitElement {
         transition: all 0.2s ease;
       }
       .hvac-tab-btn.active {
-        background: var(--card-background-color, #fff);
-        color: var(--primary-color, #3b82f6) !important;
+        background: var(--primary-color, #3b82f6);
+        color: var(--text-primary-color, var(--primary-text-color, #fff)) !important;
         font-weight: 700;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+      }
+      .hvac-tab-btn.active ha-icon {
+        color: var(--text-primary-color, var(--primary-text-color, #fff));
       }
 
       /* HIGH CONTRAST STATUS CHIPS */
@@ -2218,15 +2237,41 @@ class PassableHvacCard extends LitElement {
 
       /* STEPPER PILL CONTROLLER */
       .step-controller-pill {
-        display: flex; align-items: center; justify-content: space-between; background: rgba(0, 0, 0, 0.4);
-        border-radius: 20px; padding: 4px 10px; gap: 8px; border: none; flex-shrink: 0; box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: var(--secondary-background-color, rgba(128, 128, 128, 0.15));
+        border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.08));
+        border-radius: 20px;
+        padding: 4px 10px;
+        gap: 8px;
+        flex-shrink: 0;
+        box-sizing: border-box;
       }
       .pill-btn {
-        background: none; border: none; color: var(--primary-text-color); cursor: pointer; padding: 2px 6px;
-        display: flex; align-items: center; justify-content: center; font-size: 0.82rem; font-weight: 700; opacity: 0.85; white-space: nowrap; flex-shrink: 0;
+        background: none;
+        border: none;
+        color: var(--primary-text-color);
+        cursor: pointer;
+        padding: 2px 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.82rem;
+        font-weight: 700;
+        opacity: 0.85;
+        white-space: nowrap;
+        flex-shrink: 0;
+        transition: opacity 0.15s ease;
       }
       .pill-btn:hover { opacity: 1; }
-      .pill-value { font-weight: 600; font-size: 0.9rem; color: var(--primary-text-color); white-space: nowrap; text-align: center; }
+      .pill-value {
+        font-weight: 600;
+        font-size: 0.9rem;
+        color: var(--primary-text-color);
+        white-space: nowrap;
+        text-align: center;
+      }
 
       .control-row { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 34px; margin: 2px 0; }
       .control-label-group { display: flex; align-items: center; gap: 10px; color: var(--primary-text-color); }
@@ -2241,7 +2286,20 @@ class PassableHvacCard extends LitElement {
       .materials-section h3 { margin: 0 0 10px 0; font-size: 1rem; display: flex; align-items: center; gap: 8px; color: #4ade80; }
       .step-timeline { display: flex; flex-direction: column; gap: 16px; }
       .step { display: flex; gap: 14px; }
-      .step-num { background: #86efac; color: #052e16; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.9rem; flex-shrink: 0; margin-top: 2px; }
+      .step-num {
+        background: var(--primary-color, #3b82f6);
+        color: var(--text-primary-color, var(--primary-text-color, #fff));
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        font-size: 0.9rem;
+        flex-shrink: 0;
+        margin-top: 2px;
+      }
       .step-content h4 { margin: 0 0 4px 0; font-size: 1.05rem; }
       .step-content p { margin: 0 0 4px 0; font-size: 0.9rem; color: var(--secondary-text-color); line-height: 1.4; }
 
@@ -2404,9 +2462,13 @@ class PassableHvacCard extends LitElement {
         background: rgba(128, 128, 128, 0.15);
       }
       .popup-tab.active-tab {
-        background: var(--card-background-color, #fff);
-        color: var(--primary-color, #3b82f6);
+        background: var(--primary-color, #3b82f6);
+        color: var(--text-primary-color, var(--primary-text-color, #fff));
+        font-weight: 700;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+      }
+      .popup-tab.active-tab ha-icon {
+        color: var(--text-primary-color, var(--primary-text-color, #fff));
       }
 
       @media (max-width: 768px) {
