@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.0.6
+ * Version: 1.0.7
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.0.6";
+const CARD_VERSION = "1.0.7";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -75,7 +75,7 @@ class PassableHvacCard extends LitElement {
     c.downstairs_cool_overshoot_thresh = c.downstairs_cool_overshoot_thresh || "input_number.hvac_overshoot_threshold_cool";
     c.downstairs_heat_overshoot_thresh = c.downstairs_heat_overshoot_thresh || "input_number.hvac_overshoot_threshold_heat";
     c.downstairs_filter_hours = c.downstairs_filter_hours || "sensor.hvac_filter_life_remaining_downstairs";
-    c.downstairs_filter_life = c.downstairs_filter_life || "input_number.hvac_filter_life_downstairs";
+    c.downstairs_filter_life = c.downstairs_filter_life || "number.hvac_filter_life_downstairs";
 
     c.upstairs_climate = c.upstairs_climate || (c.device_prefix ? `climate.${p}_upstairs` : "climate.upstairs");
     c.upstairs_climate_hk = c.upstairs_climate_hk || (c.device_prefix ? `climate.${p}_upstairs_hk` : "climate.upstairs_hk");
@@ -86,7 +86,7 @@ class PassableHvacCard extends LitElement {
     c.upstairs_cool_overshoot_thresh = c.upstairs_cool_overshoot_thresh || "input_number.hvac_overshoot_threshold_cool";
     c.upstairs_heat_overshoot_thresh = c.upstairs_heat_overshoot_thresh || "input_number.hvac_overshoot_threshold_heat";
     c.upstairs_filter_hours = c.upstairs_filter_hours || "sensor.hvac_filter_life_remaining_upstairs";
-    c.upstairs_filter_life = c.upstairs_filter_life || "input_number.hvac_filter_life_upstairs";
+    c.upstairs_filter_life = c.upstairs_filter_life || "number.hvac_filter_life_upstairs";
 
     c.global_setpoint_preset = c.global_setpoint_preset || "input_select.home_mode";
 
@@ -191,8 +191,15 @@ class PassableHvacCard extends LitElement {
   _adjustFilterLifeAndHours(filterHoursId, filterLifeId, delta) {
     this._fireHaptic("light");
     const filterLife = this._getEntity(filterLifeId);
-    let val = parseFloat(filterLife.state) || 300;
-    val = Math.max(50, val + delta);
+    const filterHours = this._getEntity(filterHoursId);
+    const rawLife = (filterLife && filterLife.state !== "unavailable" && filterLife.state !== "unknown")
+      ? parseFloat(filterLife.state)
+      : NaN;
+    const fallbackCap = (filterHours && filterHours.attributes && filterHours.attributes.capacity_hours !== undefined)
+      ? parseFloat(filterHours.attributes.capacity_hours)
+      : 300;
+    let val = !isNaN(rawLife) ? rawLife : (!isNaN(fallbackCap) ? fallbackCap : 300);
+    val = Math.max(50, Math.round(val + delta));
     this._setNumberEntity(filterLifeId, val);
 
     if (filterHoursId && (filterHoursId.startsWith("input_number.") || filterHoursId.startsWith("number."))) {
@@ -767,7 +774,7 @@ class PassableHvacCard extends LitElement {
     const coolOvershootId = sysConfig.cool_overshoot || c[`${unitKey}_cool_overshoot`] || "input_number.hvac_overshoot_amount_cool";
     const heatOvershootId = sysConfig.heat_overshoot || c[`${unitKey}_heat_overshoot`] || "input_number.hvac_overshoot_amount_heat";
     const filterHoursId = sysConfig.filter_hours || c[`${unitKey}_filter_hours`] || `sensor.hvac_filter_life_remaining_${unitKey}`;
-    const filterLifeId = sysConfig.filter_life || c[`${unitKey}_filter_life`] || `input_number.hvac_filter_life_${unitKey}`;
+    const filterLifeId = sysConfig.filter_life || c[`${unitKey}_filter_life`] || (this.hass?.states?.[`number.hvac_filter_life_${unitKey}`] ? `number.hvac_filter_life_${unitKey}` : `input_number.hvac_filter_life_${unitKey}`);
     const timeToTempId = sysConfig.time_to_temp || c[`${unitKey}_time_to_temp`] || `sensor.hvac_time_to_temp_${unitKey}`;
     const healthStatusId = sysConfig.health_status || c[`${unitKey}_health_status`] || `sensor.hvac_health_status_${unitKey}`;
 
@@ -1073,7 +1080,10 @@ class PassableHvacCard extends LitElement {
     const coolThreshId = sysConfig.cool_overshoot_thresh || c[`${unitKey}_cool_overshoot_thresh`] || "input_number.hvac_overshoot_threshold_cool";
     const heatThreshId = sysConfig.heat_overshoot_thresh || c[`${unitKey}_heat_overshoot_thresh`] || "input_number.hvac_overshoot_threshold_heat";
     const filterHoursId = sysConfig.filter_hours || c[`${unitKey}_filter_hours`] || `sensor.hvac_filter_life_remaining_${unitKey}`;
-    const filterLifeId = sysConfig.filter_life || c[`${unitKey}_filter_life`] || `input_number.hvac_filter_life_${unitKey}`;
+    const filterLifeId = resolveEntity(
+      sysConfig.filter_life || c[`${unitKey}_filter_life`],
+      [`number.hvac_filter_life_${unitKey}`, `input_number.hvac_filter_life_${unitKey}`]
+    );
 
     const climate = this._getEntity(climateId);
     const acCondensersObj = this._getEntity(acCondensersId);
@@ -2216,7 +2226,7 @@ class PassableHvacCard extends LitElement {
                         <ha-icon icon="mdi:timer-outline"></ha-icon>
                         <span class="control-label">Filter Life Remaining</span>
                       </div>
-                      <span class="control-value" style="font-weight:700; color:var(--primary-color);">${(filterHours && filterHours.state) || 0} hrs</span>
+                      <span class="control-value" style="font-weight:700; color:var(--primary-color);">${(filterHours && filterHours.state !== "unavailable" && filterHours.state !== "unknown") ? filterHours.state : 0} hrs</span>
                     </div>
 
                     ${(filterHours && filterHours.attributes && (filterHours.attributes.last_replaced || filterHours.attributes[`last_changed_${unitKey}`]))
@@ -2240,7 +2250,7 @@ class PassableHvacCard extends LitElement {
                       </div>
                       <div class="step-controller-pill">
                         <button class="pill-btn" @click=${() => this._adjustFilterLifeAndHours(filterHoursId, filterLifeId, -25)}>-25h</button>
-                        <span class="pill-value">${(filterLife && filterLife.state) || 300} hrs</span>
+                        <span class="pill-value">${(filterLife && filterLife.state !== "unavailable" && filterLife.state !== "unknown" && !isNaN(parseFloat(filterLife.state))) ? Math.round(parseFloat(filterLife.state)) : ((filterHours && filterHours.attributes && filterHours.attributes.capacity_hours !== undefined) ? Math.round(parseFloat(filterHours.attributes.capacity_hours)) : 300)} hrs</span>
                         <button class="pill-btn" @click=${() => this._adjustFilterLifeAndHours(filterHoursId, filterLifeId, 25)}>+25h</button>
                       </div>
                     </div>
