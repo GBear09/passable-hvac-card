@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.0.5
+ * Version: 1.0.6
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.0.5";
+const CARD_VERSION = "1.0.6";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -194,17 +194,39 @@ class PassableHvacCard extends LitElement {
     let val = parseFloat(filterLife.state) || 300;
     val = Math.max(50, val + delta);
     this._setNumberEntity(filterLifeId, val);
-    
-    if (filterHoursId) {
+
+    if (filterHoursId && (filterHoursId.startsWith("input_number.") || filterHoursId.startsWith("number."))) {
       this._setNumberEntity(filterHoursId, val);
     }
   }
 
-  _resetHvacFilter(filterHoursId, filterLifeId) {
+  _resetHvacFilter(unitKey, filterHoursId, filterLifeId) {
     this._fireHaptic("heavy");
-    const filterLife = this._getEntity(filterLifeId);
-    const maxVal = parseFloat(filterLife.state) || 300;
-    this._setNumberEntity(filterHoursId, maxVal);
+    const zone = (unitKey || "downstairs").toLowerCase();
+    if (this.hass && this.hass.services && this.hass.services.passable_climate && this.hass.services.passable_climate.reset_filter) {
+      this.hass.callService("passable_climate", "reset_filter", { zone });
+      return;
+    }
+    const resetBtnId = `button.reset_hvac_filter_${zone}`;
+    if (this.hass && this.hass.states && this.hass.states[resetBtnId]) {
+      this.hass.callService("button", "press", { entity_id: resetBtnId });
+      return;
+    }
+    const scriptId = `script.reset_hvac_filter_${zone}`;
+    if (this.hass && this.hass.states && this.hass.states[scriptId]) {
+      this.hass.callService("script", "turn_on", { entity_id: scriptId });
+      return;
+    }
+    const meterId = `sensor.hvac_${zone}_filter_runtime`;
+    if (this.hass && this.hass.states && this.hass.states[meterId] && this.hass.services?.utility_meter?.reset) {
+      this.hass.callService("utility_meter", "reset", { entity_id: meterId });
+      return;
+    }
+    if (filterHoursId && (filterHoursId.startsWith("input_number.") || filterHoursId.startsWith("number."))) {
+      const filterLife = this._getEntity(filterLifeId);
+      const maxVal = parseFloat(filterLife.state) || 300;
+      this._setNumberEntity(filterHoursId, maxVal);
+    }
   }
 
   _getPresetIcon(presetName) {
@@ -746,6 +768,8 @@ class PassableHvacCard extends LitElement {
     const heatOvershootId = sysConfig.heat_overshoot || c[`${unitKey}_heat_overshoot`] || "input_number.hvac_overshoot_amount_heat";
     const filterHoursId = sysConfig.filter_hours || c[`${unitKey}_filter_hours`] || `sensor.hvac_filter_life_remaining_${unitKey}`;
     const filterLifeId = sysConfig.filter_life || c[`${unitKey}_filter_life`] || `input_number.hvac_filter_life_${unitKey}`;
+    const timeToTempId = sysConfig.time_to_temp || c[`${unitKey}_time_to_temp`] || `sensor.hvac_time_to_temp_${unitKey}`;
+    const healthStatusId = sysConfig.health_status || c[`${unitKey}_health_status`] || `sensor.hvac_health_status_${unitKey}`;
 
     const climate = this._getEntity(climateId);
     const preset = this._getEntity(presetId);
@@ -754,6 +778,8 @@ class PassableHvacCard extends LitElement {
     const coolOvershoot = this._getEntity(coolOvershootId);
     const filterHours = this._getEntity(filterHoursId);
     const filterLife = this._getEntity(filterLifeId);
+    const timeToTempObj = this._getEntity(timeToTempId);
+    const healthStatusObj = this._getEntity(healthStatusId);
 
     const systemSensors = this._getSystemSensors(unitKey, sysConfig, climateId);
 
@@ -767,6 +793,18 @@ class PassableHvacCard extends LitElement {
       : "--";
 
     const humidity = climate.attributes.current_humidity ?? "--";
+
+    const timeToTempMins = (timeToTempObj && timeToTempObj.state && !isNaN(parseFloat(timeToTempObj.state)))
+      ? Math.round(parseFloat(timeToTempObj.state))
+      : 0;
+    const timeToTargetStr = ((hvacAction === "cooling" || hvacAction === "heating") && timeToTempMins > 0)
+      ? `~${timeToTempMins}m`
+      : "";
+
+    const healthState = (healthStatusObj && healthStatusObj.state && healthStatusObj.state !== "unavailable" && healthStatusObj.state !== "unknown")
+      ? String(healthStatusObj.state)
+      : "Optimal";
+    const isHealthAlert = healthState === "Short Cycling" || healthState === "Thermal Stall";
 
     let stateClass = "idle";
     let stateLabel = "IDLE";
@@ -907,6 +945,18 @@ class PassableHvacCard extends LitElement {
                       </span>
                     `
                   : ""}
+                ${isHealthAlert
+                  ? html`
+                      <span
+                        class="hvac-mini-badge warning-filter"
+                        @click=${(e) => { e.stopPropagation(); this._showMoreInfo(healthStatusId); }}
+                        style="cursor:pointer;"
+                        title="HVAC Mechanical Diagnostic Alert: ${healthState}"
+                      >
+                        ⚡ ${healthState}
+                      </span>
+                    `
+                  : ""}
               </div>
 
               ${hasSensors ? html`
@@ -924,11 +974,11 @@ class PassableHvacCard extends LitElement {
             </div>
           </div>
 
-          <!-- Center Section: Current Temp + Target Setpoint (with inline Overshoot offset) + Humidity -->
+          <!-- Center Section: Current Temp + Target Setpoint (with inline Overshoot offset & Time-to-Target) + Humidity -->
           <div class="hvac-compact-center">
             <div class="hvac-compact-temp">${currentTemp}°</div>
             <div class="hvac-compact-subtemp">
-              Set ${targetTemp}°${activeOvershootOffset ? ` (${activeOvershootOffset})` : ""} • ${humidity}% RH
+              Set ${targetTemp}°${activeOvershootOffset ? ` (${activeOvershootOffset})` : ""}${timeToTargetStr ? ` (${timeToTargetStr})` : ""} • ${humidity}% RH
             </div>
           </div>
         </div>
@@ -2169,6 +2219,20 @@ class PassableHvacCard extends LitElement {
                       <span class="control-value" style="font-weight:700; color:var(--primary-color);">${(filterHours && filterHours.state) || 0} hrs</span>
                     </div>
 
+                    ${(filterHours && filterHours.attributes && (filterHours.attributes.last_replaced || filterHours.attributes[`last_changed_${unitKey}`]))
+                      ? html`
+                          <div class="control-row" style="margin-bottom:12px;">
+                            <div class="control-label-group">
+                              <ha-icon icon="mdi:calendar-check-outline"></ha-icon>
+                              <span class="control-label">Last Replaced</span>
+                            </div>
+                            <span class="control-value" style="font-size:0.85rem; color:var(--secondary-text-color);">
+                              ${filterHours.attributes.last_replaced || filterHours.attributes[`last_changed_${unitKey}`]}
+                            </span>
+                          </div>
+                        `
+                      : ""}
+
                     <div class="control-row">
                       <div class="control-label-group">
                         <ha-icon icon="mdi:speedometer"></ha-icon>
@@ -2206,7 +2270,7 @@ class PassableHvacCard extends LitElement {
                     </div>
                   </div>
 
-                  <button class="recirc-button active" style="width:100%; margin-top:16px;" @click=${() => this._resetHvacFilter(filterHoursId, filterLifeId)}>
+                  <button class="recirc-button active" style="width:100%; margin-top:16px;" @click=${() => this._resetHvacFilter(unitKey, filterHoursId, filterLifeId)}>
                     <ha-icon icon="mdi:refresh"></ha-icon>
                     <span>RESET FILTER LIFE COUNTER</span>
                   </button>
