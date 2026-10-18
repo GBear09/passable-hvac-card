@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.0.7
+ * Version: 1.0.8
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.0.7";
+const CARD_VERSION = "1.0.8";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -870,9 +870,9 @@ class PassableHvacCard extends LitElement {
     let activeOvershootOffset = null;
     if (isOvershootActive) {
       if (hvacAction === "cooling" && coolOvershoot.state && coolOvershoot.state !== "unavailable" && coolOvershoot.state !== "unknown") {
-        activeOvershootOffset = `+${coolOvershoot.state}°`;
+        activeOvershootOffset = `-${coolOvershoot.state}°`;
       } else if (hvacAction === "heating" && heatOvershoot.state && heatOvershoot.state !== "unavailable" && heatOvershoot.state !== "unknown") {
-        activeOvershootOffset = `-${heatOvershoot.state}°`;
+        activeOvershootOffset = `+${heatOvershoot.state}°`;
       } else if (overshootActiveObj.state === "on") {
         activeOvershootOffset = `Active`;
       }
