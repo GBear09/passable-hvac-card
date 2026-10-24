@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.1.0
+ * Version: 1.1.1
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.1.0";
+const CARD_VERSION = "1.1.1";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -606,7 +606,7 @@ class PassableHvacCard extends LitElement {
             `
           : ""}
 
-        <div class="card-content">
+        <div class="card-content ${c.show_header === false ? 'no-header' : ''}">
           <div class="hvac-grid">
             ${systems.map((sys) => this._renderHvacUnitCard(sys.key, sys.name, sys.icon, sys.climate, sys))}
           </div>
@@ -931,7 +931,8 @@ class PassableHvacCard extends LitElement {
       }
     }
 
-    const hasBadgesRow = Boolean(timeToTargetStr || activeOvershootOffset || isFanCircActive || isFilterAlert || isHealthAlert);
+    const hasHumidity = humidity !== "--" && humidity !== null && humidity !== "";
+    const hasBadgesRow = Boolean(hasHumidity || timeToTargetStr || activeOvershootOffset || isFanCircActive || isFilterAlert || isHealthAlert);
 
     return html`
       <div
@@ -981,7 +982,7 @@ class PassableHvacCard extends LitElement {
             <div class="hvac-zone-target-row">
               <span class="hvac-target-val">Set ${targetTemp}°</span>
               <span class="hvac-target-sep">•</span>
-              <span class="hvac-humidity-val">${humidity}% RH</span>
+              <span class="hvac-humidity-inline">${humidity}% RH</span>
             </div>
           </div>
         </div>
@@ -990,6 +991,14 @@ class PassableHvacCard extends LitElement {
         ${hasBadgesRow
           ? html`
               <div class="hvac-zone-badges-row">
+                ${hasHumidity
+                  ? html`
+                      <div class="passable-badge badge-humidity" title="Indoor Humidity: ${humidity}% RH">
+                        <ha-icon icon="mdi:water-percent"></ha-icon>
+                        <span>${humidity}% RH</span>
+                      </div>
+                    `
+                  : ""}
                 ${timeToTargetStr
                   ? html`
                       <div class="passable-badge ${hvacAction === 'cooling' ? 'info' : 'warning'}" title="Estimated time to reach ${targetTemp}°">
@@ -1050,13 +1059,13 @@ class PassableHvacCard extends LitElement {
                 @click=${(e) => this._toggleSensorTray(e, unitKey)}
                 title="Tap to toggle ${systemSensors.length} remote room sensors"
               >
-                <div class="expand-bar-left">
-                  <ha-icon icon="mdi:home-thermometer-outline"></ha-icon>
-                  <span>${systemSensors.length} Room ${systemSensors.length === 1 ? 'Sensor' : 'Sensors'}</span>
+                <div class="sensor-bar-left">
+                  <ha-icon icon="mdi:home-thermometer-outline" class="sensor-summary-icon"></ha-icon>
+                  <span class="sensor-summary-label">${systemSensors.length} Room ${systemSensors.length === 1 ? 'Sensor' : 'Sensors'}</span>
                 </div>
-                <div class="expand-bar-right">
-                  ${tempRangeStr ? html`<span class="sensor-bar-range">${tempRangeStr}</span>` : ""}
-                  <ha-icon icon="${isExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}" class="expand-chevron"></ha-icon>
+                <div class="sensor-bar-right">
+                  ${tempRangeStr ? html`<span class="sensor-summary-range">${tempRangeStr}</span>` : ""}
+                  <ha-icon icon="${isExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}" class="sensor-summary-chevron"></ha-icon>
                 </div>
               </div>
 
@@ -1070,8 +1079,8 @@ class PassableHvacCard extends LitElement {
                             @click=${(e) => { e.stopPropagation(); this._showMoreInfo(s.entityId); }}
                             title="${s.name}: ${s.temp}${s.unit} ${s.isActive ? '(Active in comfort profile)' : '(Standby)'}"
                           >
-                            <div class="room-mini-left">
-                              <span class="sensor-dot ${s.isActive ? 'active' : 'standby'}"></span>
+                            <div class="room-mini-top">
+                              <span class="room-mini-dot ${s.isActive ? 'active' : 'standby'}"></span>
                               <span class="room-mini-name">${s.cleanName}</span>
                             </div>
                             <span class="room-mini-temp">${s.temp}°</span>
@@ -2508,22 +2517,25 @@ class PassableHvacCard extends LitElement {
       }
 
       .card-content {
-        padding: 16px;
+        padding: 10px 12px;
         container-type: inline-size;
+      }
+      .card-content.no-header {
+        padding: 8px 10px;
       }
       .header + .card-content, .header ~ .card-content {
         padding-top: 0;
       }
 
       /* PASSABLE DESIGN SYSTEM: HVAC ZONE CARD */
-      .hvac-grid { display: flex; flex-direction: column; gap: 10px; }
+      .hvac-grid { display: flex; flex-direction: column; gap: 8px; }
       .hvac-unit-card {
         background: var(--secondary-background-color, rgba(128,128,128,0.12));
-        border-radius: 16px;
-        padding: 12px 14px;
+        border-radius: 12px;
+        padding: 9px 11px;
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 6px;
         border: 1px solid var(--divider-color, rgba(255,255,255,0.08));
         transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
         cursor: pointer;
@@ -2539,19 +2551,21 @@ class PassableHvacCard extends LitElement {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 10px;
+        gap: 8px;
         width: 100%;
+        min-width: 0;
       }
       .hvac-zone-identity {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 8px;
         min-width: 0;
         flex: 1;
+        overflow: hidden;
       }
       .hvac-zone-icon-wrap {
-        width: 38px;
-        height: 38px;
+        width: 34px;
+        height: 34px;
         border-radius: 50%;
         display: flex;
         align-items: center;
@@ -2564,7 +2578,7 @@ class PassableHvacCard extends LitElement {
         transition: all 0.25s ease;
       }
       .hvac-zone-icon-wrap ha-icon {
-        --mdc-icon-size: 20px;
+        --mdc-icon-size: 18px;
       }
       .hvac-zone-icon-wrap.active-heat {
         background: rgba(234, 88, 12, 0.22);
@@ -2599,55 +2613,85 @@ class PassableHvacCard extends LitElement {
         border-color: rgba(192, 132, 252, 0.3);
       }
 
-      .hvac-zone-title-col {
+      .hvac-zone-title-wrap {
         display: flex;
         flex-direction: column;
         gap: 2px;
         min-width: 0;
+        flex: 1;
+        overflow: hidden;
       }
       .hvac-zone-title {
-        font-size: 1.0rem;
+        font-size: 0.92rem;
         font-weight: 700;
         color: var(--primary-text-color);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         letter-spacing: -0.01em;
+        margin: 0;
+        line-height: 1.2;
       }
       .hvac-zone-subtitle {
         display: flex;
         align-items: center;
-        gap: 5px;
-        font-size: 0.78rem;
+        gap: 4px;
+        font-size: 0.74rem;
         font-weight: 600;
         color: var(--secondary-text-color);
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+        line-height: 1.2;
+      }
+      .hvac-mode-inline {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+      }
+      .hvac-mode-inline ha-icon {
+        --mdc-icon-size: 13px;
+        flex-shrink: 0;
       }
       .hvac-mode-inline.active-heat { color: #fb923c; font-weight: 700; }
       .hvac-mode-inline.idle-heat { color: #fdba74; }
       .hvac-mode-inline.active-cool { color: #38bdf8; font-weight: 700; }
       .hvac-mode-inline.idle-cool { color: #7dd3fc; }
       .hvac-mode-inline.active-fan { color: #4ade80; font-weight: 700; }
-      .hvac-dot-sep { opacity: 0.5; }
+      .hvac-subtitle-dot { opacity: 0.4; flex-shrink: 0; }
       .hvac-preset-inline {
         display: inline-flex;
         align-items: center;
         gap: 3px;
         color: var(--primary-text-color);
         opacity: 0.9;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+        cursor: pointer;
+      }
+      .hvac-preset-inline ha-icon {
+        --mdc-icon-size: 13px;
+        flex-shrink: 0;
       }
 
-      /* Right Primary Readout: Big Current Temp + High-Visibility Setpoint & Humidity */
+      /* Right Primary Readout: Big Current Temp + High-Visibility Target Setpoint */
       .hvac-zone-primary {
         display: flex;
         flex-direction: column;
         align-items: flex-end;
         justify-content: center;
         flex-shrink: 0;
-        gap: 2px;
+        gap: 1px;
       }
       .hvac-zone-current-temp {
-        font-size: 2.05rem;
+        font-size: 1.85rem;
         font-weight: 800;
         line-height: 0.95;
         color: var(--primary-text-color);
@@ -2656,18 +2700,41 @@ class PassableHvacCard extends LitElement {
       .hvac-zone-target-row {
         display: flex;
         align-items: center;
-        gap: 5px;
-        font-size: 0.88rem;
+        justify-content: flex-end;
+        gap: 4px;
+        font-size: 0.80rem;
         font-weight: 700;
         white-space: nowrap;
         margin-top: 2px;
       }
       .hvac-target-val {
-        color: var(--primary-text-color);
+        color: var(--secondary-text-color);
       }
-      .hvac-humidity-val {
+      .hvac-target-sep {
+        opacity: 0.4;
+      }
+      .hvac-humidity-inline {
         color: var(--info-color, #38bdf8);
-        font-weight: 600;
+      }
+
+      /* Responsive Container Query:
+         On smaller resolution screens (<350px): hide inline humidity from target row so it never overlaps,
+         and show humidity in the badges row!
+         On wider screens (>=350px): show inline humidity and hide the badge. */
+      .hvac-target-sep, .hvac-humidity-inline {
+        display: none;
+      }
+      .passable-badge.badge-humidity {
+        display: inline-flex;
+      }
+
+      @container (min-width: 350px) {
+        .hvac-target-sep, .hvac-humidity-inline {
+          display: inline;
+        }
+        .passable-badge.badge-humidity {
+          display: none !important;
+        }
       }
 
       /* Dynamic Operational & Alert Badges Row */
@@ -2675,16 +2742,16 @@ class PassableHvacCard extends LitElement {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 6px;
-        margin-top: 2px;
+        gap: 5px;
+        margin-top: 1px;
       }
       .passable-badge {
         display: inline-flex;
         align-items: center;
         gap: 4px;
-        padding: 3px 9px;
+        padding: 2px 8px;
         border-radius: 999px;
-        font-size: 0.75rem;
+        font-size: 0.72rem;
         font-weight: 700;
         line-height: 1.2;
         white-space: nowrap;
@@ -2693,12 +2760,17 @@ class PassableHvacCard extends LitElement {
       .passable-badge ha-icon {
         --mdc-icon-size: 13px;
       }
-      .passable-badge.badge-heat {
+      .passable-badge.badge-humidity {
+        background: rgba(2, 132, 199, 0.15);
+        color: #38bdf8;
+        border-color: rgba(56, 189, 248, 0.3);
+      }
+      .passable-badge.badge-heat, .passable-badge.warning {
         background: rgba(234, 88, 12, 0.18);
         color: #fb923c;
         border-color: rgba(251, 146, 60, 0.35);
       }
-      .passable-badge.badge-cool {
+      .passable-badge.badge-cool, .passable-badge.info {
         background: rgba(2, 132, 199, 0.18);
         color: #38bdf8;
         border-color: rgba(56, 189, 248, 0.35);
@@ -2708,7 +2780,7 @@ class PassableHvacCard extends LitElement {
         color: #fbbf24;
         border-color: rgba(251, 191, 36, 0.35);
       }
-      .passable-badge.badge-fan {
+      .passable-badge.badge-fan, .passable-badge.success {
         background: rgba(22, 163, 74, 0.16);
         color: #4ade80;
         border-color: rgba(74, 222, 128, 0.3);
@@ -2719,7 +2791,7 @@ class PassableHvacCard extends LitElement {
         border-color: rgba(245, 158, 11, 0.5);
         cursor: pointer;
       }
-      .passable-badge.badge-danger {
+      .passable-badge.badge-danger, .passable-badge.danger {
         background: rgba(239, 68, 68, 0.22);
         color: #f87171;
         border-color: rgba(239, 68, 68, 0.5);
@@ -2736,11 +2808,11 @@ class PassableHvacCard extends LitElement {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 8px;
-        padding: 6px 10px;
-        margin-top: 2px;
-        border-radius: 10px;
-        font-size: 0.78rem;
+        gap: 6px;
+        padding: 5px 8px;
+        margin-top: 1px;
+        border-radius: 8px;
+        font-size: 0.74rem;
         background: var(--card-background-color, rgba(128, 128, 128, 0.08));
         border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.07));
         color: var(--secondary-text-color);
@@ -2753,7 +2825,7 @@ class PassableHvacCard extends LitElement {
         border-color: rgba(var(--rgb-primary-color, 3, 169, 244), 0.35);
         color: var(--primary-text-color);
       }
-      .hvac-sensor-expand-bar.expanded {
+      .hvac-sensor-expand-bar.open {
         background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.10);
         border-color: rgba(var(--rgb-primary-color, 3, 169, 244), 0.30);
         color: var(--primary-text-color);
@@ -2761,17 +2833,17 @@ class PassableHvacCard extends LitElement {
       .sensor-bar-left {
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 5px;
         min-width: 0;
       }
       .sensor-bar-right {
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 5px;
         flex-shrink: 0;
       }
       .sensor-summary-icon {
-        --mdc-icon-size: 15px;
+        --mdc-icon-size: 14px;
         color: var(--primary-color, #03a9f4);
       }
       .sensor-summary-label {
@@ -2780,20 +2852,20 @@ class PassableHvacCard extends LitElement {
       }
       .sensor-summary-range {
         font-weight: 800;
-        font-size: 0.82rem;
+        font-size: 0.78rem;
         color: var(--primary-text-color);
       }
       .sensor-summary-chevron {
-        --mdc-icon-size: 16px;
+        --mdc-icon-size: 15px;
         color: var(--secondary-text-color);
       }
 
       .hvac-sensor-tray-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(115px, 1fr));
-        gap: 6px;
-        margin-top: 4px;
-        padding-top: 6px;
+        grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
+        gap: 5px;
+        margin-top: 3px;
+        padding-top: 5px;
         border-top: 1px dashed var(--divider-color, rgba(255, 255, 255, 0.1));
         width: 100%;
         animation: slideDown 0.18s ease-out forwards;
@@ -2806,9 +2878,9 @@ class PassableHvacCard extends LitElement {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 6px;
-        padding: 6px 9px;
-        border-radius: 8px;
+        gap: 5px;
+        padding: 5px 8px;
+        border-radius: 7px;
         background: var(--card-background-color, rgba(128, 128, 128, 0.08));
         border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.06));
         cursor: pointer;
@@ -2830,8 +2902,8 @@ class PassableHvacCard extends LitElement {
         min-width: 0;
       }
       .room-mini-dot {
-        width: 6px;
-        height: 6px;
+        width: 5px;
+        height: 5px;
         border-radius: 50%;
         background: var(--success-color, #22c55e);
         flex-shrink: 0;
@@ -2841,7 +2913,7 @@ class PassableHvacCard extends LitElement {
         opacity: 0.5;
       }
       .room-mini-name {
-        font-size: 0.75rem;
+        font-size: 0.73rem;
         font-weight: 600;
         color: var(--primary-text-color);
         white-space: nowrap;
@@ -2849,6 +2921,11 @@ class PassableHvacCard extends LitElement {
         text-overflow: ellipsis;
       }
       .room-mini-temp {
+        font-size: 0.78rem;
+        font-weight: 800;
+        color: var(--primary-text-color);
+        flex-shrink: 0;
+      }
         font-size: 0.82rem;
         font-weight: 800;
         color: var(--primary-text-color);
