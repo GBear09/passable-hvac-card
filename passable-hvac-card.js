@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.1.1";
+const CARD_VERSION = "1.1.2";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -272,6 +272,12 @@ class PassableHvacCard extends LitElement {
     this.requestUpdate();
   }
 
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    clearTimeout(this._closeModalTimer);
+    clearTimeout(this._swipeResetTimer);
+  }
+
   _closeHvacModal() {
     this._fireHaptic("light");
     const overlay = this.shadowRoot.querySelector(".popup-overlay");
@@ -283,7 +289,8 @@ class PassableHvacCard extends LitElement {
       content.classList.remove("visible");
     }
 
-    setTimeout(() => {
+    clearTimeout(this._closeModalTimer);
+    this._closeModalTimer = setTimeout(() => {
       this._activeHvacTab = null;
       this._hvacModal = null;
       this.requestUpdate();
@@ -409,6 +416,10 @@ class PassableHvacCard extends LitElement {
     ) {
       return;
     }
+    if (!this._hvacHistoryInFlight) this._hvacHistoryInFlight = new Set();
+    if (this._hvacHistoryInFlight.has(unitKey)) return;
+    this._hvacHistoryInFlight.add(unitKey);
+    try {
 
     const now = new Date();
     const endTime = now;
@@ -557,6 +568,9 @@ class PassableHvacCard extends LitElement {
       climateHistory10d
     };
     this.requestUpdate();
+    } finally {
+      this._hvacHistoryInFlight.delete(unitKey);
+    }
   }
 
   render() {
@@ -2926,11 +2940,6 @@ class PassableHvacCard extends LitElement {
         color: var(--primary-text-color);
         flex-shrink: 0;
       }
-        font-size: 0.82rem;
-        font-weight: 800;
-        color: var(--primary-text-color);
-        flex-shrink: 0;
-      }
 
       /* PASSABLE MODAL COMMAND CENTER STYLES */
       .passable-section-card {
@@ -4067,14 +4076,20 @@ class PassableHvacCardEditor extends LitElement {
   }
 }
 
-customElements.define("passable-hvac-card", PassableHvacCard);
-customElements.define("passable-hvac-card-editor", PassableHvacCardEditor);
+if (!customElements.get("passable-hvac-card")) {
+  customElements.define("passable-hvac-card", PassableHvacCard);
+}
+if (!customElements.get("passable-hvac-card-editor")) {
+  customElements.define("passable-hvac-card-editor", PassableHvacCardEditor);
+}
 
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "passable-hvac-card",
-  name: "Passable HVAC Card",
-  preview: true,
-  documentationURL: "https://github.com/GBear09/passable-hvac-card",
-  description: "Dynamic multi-system HVAC, heat pump, and comfort control card.",
-});
+if (!window.customCards.some((card) => card.type === "passable-hvac-card")) {
+  window.customCards.push({
+    type: "passable-hvac-card",
+    name: "Passable HVAC Card",
+    preview: true,
+    documentationURL: "https://github.com/GBear09/passable-hvac-card",
+    description: "Dynamic multi-system HVAC, heat pump, and comfort control card.",
+  });
+}
