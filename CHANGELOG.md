@@ -5,6 +5,15 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-08
+
+### Added
+- **Smart Climate Engine (`passable_climate` v1.2.0) Telemetry Pills**: Auto-detects and renders optional main-card pills for post-compressor thermal coast (`Coasting`), open windows / debouncing windows (`X Windows Open` / `Window Debouncing`), and dynamic rate-derived pre-conditioning (`Pre-Cool @ HH:MM` / `Pre-Heat @ HH:MM`).
+- **Expanded Mechanical & Comfort Diagnostics**: Supports `"Idle Comfort Stall"` and `"Filter Overdue"` states from `sensor.hvac_health_status_<zone>` with human-readable `stall_reason` alert banners in the Setpoints modal.
+- **Learned Hysteresis Swing & Coast Readout**: Displays learned thermostat deadband swing and post-run coast (`Swing ±X°F • Coast Y°F (~Zm)`) inside the Setpoints Hero banner.
+- **Per-Room Passive Thermal Drift & Sleep Limiting Bedroom Indicator**: Enriches Remote Room Sensor tiles with live passive room drift rates (`+0.4°/h` / `-0.3°/h`), highlights the sleep-limiting bedroom (`Limiting`), and provides a 1-tap **Apply Offset** chip when `recommended_sleep_offset_f` is non-zero.
+- **Smart Climate Advisor & Learning Section (Stats & Fan Tab)**: Compact summary card showing active model source (`InfluxDB MLR` vs `Online EWMA`), live fault-tolerant zone drift rate, learned swing/coast, and 14-day window compliance metrics.
+
 ## [1.0.5] - 2026-10-02
 
 ### Added

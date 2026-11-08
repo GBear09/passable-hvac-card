@@ -39,6 +39,12 @@ A dynamic, consolidated multi-system HVAC, heat pump, and comfort control custom
    * Full graphical card configuration (`custom:passable-hvac-card`).
    * Configurable system counts, entity selectors, and collapsible zone editor panels.
 
+4. **Smart Climate Engine (`passable_climate` v1.2.0+) Auto-Integration**:
+   * Zero-config auto-discovery of `passable_climate` telemetry entities when installed alongside the card:
+     * Main card badges for **Coasting**, **Open / Debouncing Windows**, **Pre-Cool / Pre-Heat** lead times, and **Idle Comfort Stall** diagnostics.
+     * Setpoints tab **Learned Swing & Coast** badge, **1-Tap Sleep Comfort Offset** chip, and per-room passive drift rates (`°F/h`) + **Limiting** bedroom indicator.
+     * Stats & Fan tab **Smart Climate Advisor & Learning** summary (`InfluxDB MLR` vs `Online EWMA`, live zone drift rate, and 14-day window compliance score).
+
 ---
 
 ## 📦 Installation via HACS

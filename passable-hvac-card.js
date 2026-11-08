@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.1.1
+ * Version: 1.2.0
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.1.2";
+const CARD_VERSION = "1.2.0";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -721,6 +721,33 @@ class PassableHvacCard extends LitElement {
       });
     };
 
+    const advisorRecObj = this.hass?.states?.["sensor.passable_climate_window_recommendation"];
+    const limitingRoomEntity = advisorRecObj?.attributes?.sleep_limiting_room_entity || null;
+    const openWinCountObj = this.hass?.states?.[`sensor.${unitKey}_open_windows_count`];
+    const hasOpenWindows = openWinCountObj && !isNaN(parseInt(openWinCountObj.state, 10)) && parseInt(openWinCountObj.state, 10) > 0;
+
+    const resolveRoomPassiveRate = (entId, roomLabel) => {
+      if (!this.hass || !this.hass.states) return null;
+      const suffix = hasOpenWindows ? "open" : "closed";
+      const candidates = [];
+      if (roomLabel) {
+        const slug = String(roomLabel).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+        if (slug) candidates.push(`sensor.${slug}_heat_loss_gain_windows_${suffix}`);
+      }
+      if (entId) {
+        const entSlug = String(entId).replace(/^sensor\./, "").replace(/_temperature$/, "").replace(/_temp$/, "");
+        if (entSlug) candidates.push(`sensor.${entSlug}_heat_loss_gain_windows_${suffix}`);
+      }
+      for (const cid of candidates) {
+        const st = this.hass.states[cid];
+        if (st && st.state !== "unavailable" && st.state !== "unknown" && !isNaN(parseFloat(st.state))) {
+          const val = parseFloat(st.state);
+          return `${val >= 0 ? "+" : ""}${val.toFixed(1)}°/h`;
+        }
+      }
+      return null;
+    };
+
     if (Array.isArray(explicit) && explicit.length > 0) {
       return explicit.map((item) => {
         const entId = typeof item === "string" ? item : item.entity;
@@ -739,6 +766,8 @@ class PassableHvacCard extends LitElement {
         const temp = !isNaN(rawTemp) ? Math.round(rawTemp * 10) / 10 : stateObj.state;
         const unit = stateObj.attributes.unit_of_measurement || "°";
         const isActive = checkSensorActive(cleanName || rawFriendlyName);
+        const passiveRate = resolveRoomPassiveRate(entId, cleanName || rawFriendlyName);
+        const isLimiting = Boolean(limitingRoomEntity && entId === limitingRoomEntity);
         return {
           entityId: entId,
           name: rawFriendlyName,
@@ -746,6 +775,8 @@ class PassableHvacCard extends LitElement {
           temp,
           unit,
           isActive,
+          passiveRate,
+          isLimiting,
           stateObj
         };
       }).filter(Boolean);
@@ -789,6 +820,8 @@ class PassableHvacCard extends LitElement {
           const unit = match.attributes.unit_of_measurement || "°";
           const shortName = this._getCleanRoomName(match.attributes.friendly_name || cleanName);
           const isActive = checkSensorActive(shortName || cleanName);
+          const passiveRate = resolveRoomPassiveRate(match.entity_id, shortName || cleanName);
+          const isLimiting = Boolean(limitingRoomEntity && match.entity_id === limitingRoomEntity);
           discovered.push({
             entityId: match.entity_id,
             name: match.attributes.friendly_name || cleanName,
@@ -796,6 +829,8 @@ class PassableHvacCard extends LitElement {
             temp,
             unit,
             isActive,
+            passiveRate,
+            isLimiting,
             stateObj: match
           });
         }
@@ -821,6 +856,8 @@ class PassableHvacCard extends LitElement {
     const timeToTempId = sysConfig.time_to_temp || c[`${unitKey}_time_to_temp`] || `sensor.hvac_time_to_temp_${unitKey}`;
     const healthStatusId = sysConfig.health_status || c[`${unitKey}_health_status`] || `sensor.hvac_health_status_${unitKey}`;
     const fanCircActiveId = sysConfig.fan_circ_active || c[`${unitKey}_fan_circ_active`] || `input_boolean.hvac_fan_circulation_active_${unitKey}`;
+    const lastActivityId = sysConfig.last_activity || c[`${unitKey}_last_activity`] || `sensor.hvac_last_activity_${unitKey}`;
+    const openWindowsCountId = sysConfig.open_windows_count || c[`${unitKey}_open_windows_count`] || `sensor.${unitKey}_open_windows_count`;
 
     const climate = this._getEntity(climateId);
     const preset = this._getEntity(presetId);
@@ -832,6 +869,8 @@ class PassableHvacCard extends LitElement {
     const timeToTempObj = this._getEntity(timeToTempId);
     const healthStatusObj = this._getEntity(healthStatusId);
     const fanCircActiveObj = this._getEntity(fanCircActiveId);
+    const lastActivityObj = this.hass?.states?.[lastActivityId] || null;
+    const openWinObj = this.hass?.states?.[openWindowsCountId] || null;
 
     const systemSensors = this._getSystemSensors(unitKey, sysConfig, climateId);
 
@@ -856,8 +895,18 @@ class PassableHvacCard extends LitElement {
     const healthState = (healthStatusObj && healthStatusObj.state && healthStatusObj.state !== "unavailable" && healthStatusObj.state !== "unknown")
       ? String(healthStatusObj.state)
       : "Optimal";
-    const isHealthAlert = healthState === "Short Cycling" || healthState === "Thermal Stall";
+    const isHealthAlert = healthState !== "Optimal" && healthState !== "Healthy";
+    const stallReason = (healthStatusObj && healthStatusObj.attributes && healthStatusObj.attributes.stall_reason)
+      ? String(healthStatusObj.attributes.stall_reason)
+      : "";
     const isFanCircActive = fanCircActiveObj && fanCircActiveObj.state === "on";
+    const isCoasting = Boolean(hvacAction === "idle" && lastActivityObj && lastActivityObj.attributes && lastActivityObj.attributes.is_coasting === true);
+    const openWindowsCount = (openWinObj && openWinObj.state && !isNaN(parseInt(openWinObj.state, 10))) ? parseInt(openWinObj.state, 10) : 0;
+    const pendingDebounceCount = (openWinObj && openWinObj.attributes && Array.isArray(openWinObj.attributes.pending_debounce_sensors)) ? openWinObj.attributes.pending_debounce_sensors.length : 0;
+    const isWindowDebouncing = openWindowsCount === 0 && pendingDebounceCount > 0;
+    const preConditionNeeded = Boolean(timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.pre_condition_needed === true);
+    const preConditionMode = (timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.pre_condition_mode) ? String(timeToTempObj.attributes.pre_condition_mode) : "";
+    const preConditionStart = (timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.pre_condition_start_time) ? String(timeToTempObj.attributes.pre_condition_start_time) : "";
 
     let stateClass = "idle";
     let stateLabel = "Idle";
@@ -946,7 +995,18 @@ class PassableHvacCard extends LitElement {
     }
 
     const hasHumidity = humidity !== "--" && humidity !== null && humidity !== "";
-    const hasBadgesRow = Boolean(hasHumidity || timeToTargetStr || activeOvershootOffset || isFanCircActive || isFilterAlert || isHealthAlert);
+    const hasBadgesRow = Boolean(
+      hasHumidity ||
+      timeToTargetStr ||
+      activeOvershootOffset ||
+      isFanCircActive ||
+      isCoasting ||
+      openWindowsCount > 0 ||
+      isWindowDebouncing ||
+      preConditionNeeded ||
+      isFilterAlert ||
+      isHealthAlert
+    );
 
     return html`
       <div
@@ -1029,6 +1089,37 @@ class PassableHvacCard extends LitElement {
                       </div>
                     `
                   : ""}
+                ${isCoasting
+                  ? html`
+                      <div class="passable-badge info" title="Post-compressor thermal coast window active">
+                        <ha-icon icon="mdi:sine-wave"></ha-icon>
+                        <span>Coasting</span>
+                      </div>
+                    `
+                  : ""}
+                ${openWindowsCount > 0
+                  ? html`
+                      <div class="passable-badge info" title="${openWindowsCount} open window${openWindowsCount === 1 ? '' : 's'} detected in zone">
+                        <ha-icon icon="mdi:window-open-variant"></ha-icon>
+                        <span>${openWindowsCount} ${openWindowsCount === 1 ? 'Window' : 'Windows'} Open</span>
+                      </div>
+                    `
+                  : isWindowDebouncing
+                  ? html`
+                      <div class="passable-badge badge-neutral" title="${pendingDebounceCount} window sensor${pendingDebounceCount === 1 ? '' : 's'} debouncing before HVAC pause">
+                        <ha-icon icon="mdi:timer-sand"></ha-icon>
+                        <span>Window Debouncing</span>
+                      </div>
+                    `
+                  : ""}
+                ${preConditionNeeded
+                  ? html`
+                      <div class="passable-badge ${preConditionMode === 'cool' ? 'info' : 'warning'}" title="Dynamic rate-derived pre-conditioning recommended${preConditionStart ? ' starting at ' + preConditionStart : ''}">
+                        <ha-icon icon="mdi:clock-alert-outline"></ha-icon>
+                        <span>Pre-${preConditionMode === 'cool' ? 'Cool' : 'Heat'}${preConditionStart ? ` @ ${preConditionStart}` : ''}</span>
+                      </div>
+                    `
+                  : ""}
                 ${isFanCircActive
                   ? html`
                       <div class="passable-badge success" title="Convective Fan Recirculation Active">
@@ -1054,7 +1145,7 @@ class PassableHvacCard extends LitElement {
                       <div
                         class="passable-badge warning clickable"
                         @click=${(e) => { e.stopPropagation(); this._showMoreInfo(healthStatusId); }}
-                        title="HVAC Mechanical Diagnostic Alert: ${healthState}"
+                        title="${stallReason ? `${healthState}: ${stallReason}` : `HVAC Mechanical Diagnostic Alert: ${healthState}`}"
                       >
                         <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
                         <span>${healthState}</span>
@@ -1091,10 +1182,10 @@ class PassableHvacCard extends LitElement {
                           <div
                             class="hvac-room-mini-card ${s.isActive ? 'active' : ''}"
                             @click=${(e) => { e.stopPropagation(); this._showMoreInfo(s.entityId); }}
-                            title="${s.name}: ${s.temp}${s.unit} ${s.isActive ? '(Active in comfort profile)' : '(Standby)'}"
+                            title="${s.name}: ${s.temp}${s.unit}${s.passiveRate ? ` (${s.passiveRate})` : ''} ${s.isLimiting ? '[Sleep Limiting Room]' : (s.isActive ? '(Active in comfort profile)' : '(Standby)')}"
                           >
                             <div class="room-mini-top">
-                              <span class="room-mini-dot ${s.isActive ? 'active' : 'standby'}"></span>
+                              <span class="room-mini-dot ${s.isActive ? 'active' : 'standby'}" style="${s.isLimiting ? 'background:#f59e0b;' : ''}"></span>
                               <span class="room-mini-name">${s.cleanName}</span>
                             </div>
                             <span class="room-mini-temp">${s.temp}°</span>
@@ -1227,6 +1318,38 @@ class PassableHvacCard extends LitElement {
 
     const timeToTempId = sysConfig.time_to_temp || c[`${unitKey}_time_to_temp`] || `sensor.hvac_time_to_temp_${unitKey}`;
     const timeToTempObj = this._getEntity(timeToTempId);
+    const healthStatusId = sysConfig.health_status || c[`${unitKey}_health_status`] || `sensor.hvac_health_status_${unitKey}`;
+    const healthStatusObj = this.hass?.states?.[healthStatusId] || null;
+    const modalHealthState = (healthStatusObj && healthStatusObj.state && healthStatusObj.state !== "unavailable" && healthStatusObj.state !== "unknown")
+      ? String(healthStatusObj.state)
+      : "Optimal";
+    const modalIsHealthAlert = modalHealthState !== "Optimal" && modalHealthState !== "Healthy";
+    const modalStallReason = (healthStatusObj && healthStatusObj.attributes && healthStatusObj.attributes.stall_reason)
+      ? String(healthStatusObj.attributes.stall_reason)
+      : "";
+
+    const learnedSwing = timeToTempObj?.attributes?.learned_deadband_swing_f;
+    const learnedCoastMag = timeToTempObj?.attributes?.learned_coast_magnitude_f;
+    const learnedCoastDur = timeToTempObj?.attributes?.learned_coast_duration_mins;
+    const hasLearnedSwingCoast = learnedSwing !== undefined && learnedSwing !== null && !isNaN(parseFloat(learnedSwing));
+
+    const advisorRecObj = this.hass?.states?.["sensor.passable_climate_window_recommendation"] || null;
+    const sleepOffsetF = (isUpstairs && advisorRecObj && advisorRecObj.attributes && advisorRecObj.attributes.recommended_sleep_offset_f)
+      ? parseFloat(advisorRecObj.attributes.recommended_sleep_offset_f)
+      : 0;
+    const sleepOffsetReason = (isUpstairs && advisorRecObj && advisorRecObj.attributes && advisorRecObj.attributes.sleep_offset_reason)
+      ? String(advisorRecObj.attributes.sleep_offset_reason)
+      : "";
+    const sleepLimitingRoom = (isUpstairs && advisorRecObj && advisorRecObj.attributes && advisorRecObj.attributes.sleep_limiting_room)
+      ? String(advisorRecObj.attributes.sleep_limiting_room)
+      : "";
+
+    const zoneRateObj = this.hass?.states?.[`sensor.${unitKey}_fault_tolerant_temp_rate`] || null;
+    const profileClosedObj = this.hass?.states?.[`sensor.plot_data_${unitKey}_temp_profile_win_closed`] || null;
+    const activeModelSource = profileClosedObj?.attributes?.active_model_source || null;
+    const complianceSummary = advisorRecObj?.attributes?.compliance_summary || null;
+    const hasSmartClimateAdvisor = Boolean(advisorRecObj || zoneRateObj || profileClosedObj || hasLearnedSwingCoast);
+
     const modalHvacAction = (climate && climate.attributes && climate.attributes.hvac_action) || (climate && climate.state) || "idle";
     const modalCurrentTemp = (climate && climate.attributes && climate.attributes.current_temperature !== undefined) ? climate.attributes.current_temperature : "--";
     const modalHumidity = (climate && climate.attributes && climate.attributes.current_humidity !== undefined) ? climate.attributes.current_humidity : "--";
@@ -1818,6 +1941,17 @@ class PassableHvacCard extends LitElement {
                           ${modalOvershootOn
                             ? html`<span class="passable-badge badge-overshoot"><ha-icon icon="mdi:delta"></ha-icon>Overshoot Active</span>`
                             : ""}
+                          ${hasLearnedSwingCoast
+                            ? html`
+                                <span
+                                  class="passable-badge badge-neutral"
+                                  title="Learned Thermostat Hysteresis Swing & Post-Run Thermal Coast"
+                                >
+                                  <ha-icon icon="mdi:sine-wave"></ha-icon>
+                                  Swing ±${parseFloat(learnedSwing).toFixed(1)}°F${learnedCoastMag !== undefined && learnedCoastMag !== null && !isNaN(parseFloat(learnedCoastMag)) ? ` • Coast ${parseFloat(learnedCoastMag).toFixed(1)}°F` : ""}${learnedCoastDur ? ` (~${Math.round(parseFloat(learnedCoastDur))}m)` : ""}
+                                </span>
+                              `
+                            : ""}
                         </div>
                       </div>
 
@@ -1831,6 +1965,45 @@ class PassableHvacCard extends LitElement {
                         </div>
                       </div>
                     </div>
+
+                    ${modalIsHealthAlert && modalStallReason
+                      ? html`
+                          <div
+                            style="background:rgba(245,158,11,0.14); border:1px solid rgba(245,158,11,0.4); border-radius:10px; padding:8px 10px; margin-bottom:10px; display:flex; align-items:flex-start; gap:8px; font-size:0.75rem; color:var(--primary-text-color);"
+                          >
+                            <ha-icon icon="mdi:alert-circle-outline" style="--mdc-icon-size:16px; color:#f59e0b; flex-shrink:0; margin-top:1px;"></ha-icon>
+                            <div>
+                              <strong style="color:#f59e0b;">${modalHealthState}:</strong> ${modalStallReason}
+                            </div>
+                          </div>
+                        `
+                      : ""}
+
+                    ${isUpstairs && sleepOffsetF !== 0 && !isNaN(sleepOffsetF)
+                      ? html`
+                          <div
+                            style="background:rgba(56,189,248,0.12); border:1px solid rgba(56,189,248,0.35); border-radius:10px; padding:8px 10px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; gap:8px;"
+                          >
+                            <div style="font-size:0.74rem; line-height:1.3; color:var(--primary-text-color);">
+                              <div style="font-weight:700; color:#38bdf8; display:flex; align-items:center; gap:4px;">
+                                <ha-icon icon="mdi:bed-clock" style="--mdc-icon-size:14px;"></ha-icon>
+                                <span>Sleep Comfort Advisory${sleepLimitingRoom ? ` (${sleepLimitingRoom})` : ""}</span>
+                              </div>
+                              <div style="color:var(--secondary-text-color); font-size:0.7rem;">
+                                ${sleepOffsetReason || `Recommended ${sleepOffsetF > 0 ? `+${sleepOffsetF}` : sleepOffsetF}°F thermostat offset for limiting bedroom`}
+                              </div>
+                            </div>
+                            <button
+                              class="hvac-mode-btn active"
+                              style="padding:5px 10px; font-size:0.72rem; white-space:nowrap; flex-shrink:0;"
+                              @click=${() => this._adjustHvacTemp(climateId, sleepOffsetF)}
+                              title="Apply ${sleepOffsetF > 0 ? `+${sleepOffsetF}` : sleepOffsetF}°F offset to ${unitTitle}"
+                            >
+                              Apply ${sleepOffsetF > 0 ? `+${sleepOffsetF}` : sleepOffsetF}°F
+                            </button>
+                          </div>
+                        `
+                      : ""}
 
                     <!-- Segmented Mode Selector -->
                     <div class="passable-control-group">
@@ -1897,14 +2070,22 @@ class PassableHvacCard extends LitElement {
                       </div>
                       <div class="hvac-modal-sensors-grid">
                         ${modalSensors.map((s) => html`
-                          <div class="hvac-modal-sensor-tile ${s.isActive ? 'active' : ''}" @click=${() => this._showMoreInfo(s.entityId)} title="${s.name} (Tap for details)">
+                          <div class="hvac-modal-sensor-tile ${s.isActive ? 'active' : ''}" @click=${() => this._showMoreInfo(s.entityId)} title="${s.name}${s.passiveRate ? ` • Drift ${s.passiveRate}` : ''} (Tap for details)">
                             <div class="sensor-tile-top">
                               <span class="sensor-tile-name">${s.cleanName}</span>
-                              <span class="sensor-tile-status ${s.isActive ? 'active' : 'standby'}">
-                                ${s.isActive ? "Active" : "Standby"}
+                              <span
+                                class="sensor-tile-status ${s.isActive ? 'active' : 'standby'}"
+                                style="${s.isLimiting ? 'background:rgba(245,158,11,0.22); color:#f59e0b;' : ''}"
+                              >
+                                ${s.isLimiting ? "Limiting" : (s.isActive ? "Active" : "Standby")}
                               </span>
                             </div>
-                            <div class="sensor-tile-temp">${s.temp}°</div>
+                            <div style="display:flex; justify-content:space-between; align-items:baseline; gap:4px;">
+                              <div class="sensor-tile-temp">${s.temp}°</div>
+                              ${s.passiveRate
+                                ? html`<span style="font-size:0.65rem; font-weight:700; color:var(--secondary-text-color);">${s.passiveRate}</span>`
+                                : ""}
+                            </div>
                           </div>
                         `)}
                       </div>
@@ -2400,6 +2581,68 @@ class PassableHvacCard extends LitElement {
                           </div>
                         `}
                   </div>
+
+                  ${hasSmartClimateAdvisor
+                    ? html`
+                        <!-- SMART CLIMATE ADVISOR & LEARNING TELEMETRY CARD -->
+                        <div class="passable-section-card">
+                          <div class="passable-section-header" style="margin-bottom:8px;">
+                            <div class="passable-section-title">
+                              <ha-icon icon="mdi:brain" style="--mdc-icon-size:18px; color:var(--primary-color);"></ha-icon>
+                              <span>SMART CLIMATE ADVISOR & LEARNING</span>
+                            </div>
+                            ${activeModelSource
+                              ? html`
+                                  <span
+                                    class="passable-count-pill"
+                                    style="${activeModelSource === 'InfluxDB MLR' ? 'background:rgba(34,197,94,0.18); color:#4ade80;' : 'background:rgba(56,189,248,0.18); color:#38bdf8;'}"
+                                  >
+                                    ${activeModelSource}
+                                  </span>
+                                `
+                              : ""}
+                          </div>
+
+                          <div class="passable-stat-grid" style="margin-bottom:6px;">
+                            <div class="passable-stat-block">
+                              <span class="stat-block-label">ZONE DRIFT RATE</span>
+                              <span class="stat-block-val" style="font-size:1.05rem; color:#38bdf8;">
+                                ${(zoneRateObj && zoneRateObj.state && !isNaN(parseFloat(zoneRateObj.state)))
+                                  ? `${parseFloat(zoneRateObj.state) >= 0 ? "+" : ""}${parseFloat(zoneRateObj.state).toFixed(2)}°/h`
+                                  : "--"}
+                              </span>
+                            </div>
+                            <div class="passable-stat-block">
+                              <span class="stat-block-label">LEARNED SWING / COAST</span>
+                              <span class="stat-block-val" style="font-size:0.95rem; color:#fbbf24;">
+                                ${hasLearnedSwingCoast
+                                  ? `±${parseFloat(learnedSwing).toFixed(1)}° / ${learnedCoastMag !== undefined && learnedCoastMag !== null && !isNaN(parseFloat(learnedCoastMag)) ? `${parseFloat(learnedCoastMag).toFixed(1)}°` : "--"}`
+                                  : "--"}
+                              </span>
+                            </div>
+                            <div class="passable-stat-block">
+                              <span class="stat-block-label">14D COMPLIANCE</span>
+                              <span class="stat-block-val" style="font-size:1.05rem; color:#4ade80;">
+                                ${(complianceSummary && complianceSummary.overall_compliance_pct !== undefined && complianceSummary.overall_compliance_pct !== null)
+                                  ? `${Math.round(parseFloat(complianceSummary.overall_compliance_pct))}%`
+                                  : "N/A"}
+                              </span>
+                            </div>
+                          </div>
+
+                          ${advisorRecObj && advisorRecObj.state
+                            ? html`
+                                <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.74rem; color:var(--secondary-text-color); padding-top:4px; border-top:1px solid var(--divider-color, rgba(255,255,255,0.06));">
+                                  <span>Advisor Status: <strong style="color:var(--primary-text-color);">${advisorRecObj.state}</strong></span>
+                                  ${complianceSummary && complianceSummary.avg_response_lag_mins !== undefined && complianceSummary.avg_response_lag_mins !== null
+                                    ? html`<span>Avg Response: <strong>${Math.round(parseFloat(complianceSummary.avg_response_lag_mins))}m</strong></span>`
+                                    : ""}
+                                </div>
+                              `
+                            : ""}
+                        </div>
+                      `
+                    : ""}
                 `
               : html`
                   <!-- TAB 3: AIR FILTER MAINTENANCE -->
