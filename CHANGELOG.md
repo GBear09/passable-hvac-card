@@ -5,6 +5,12 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-11-08
+
+### Changed
+- **Next Automatic HVAC Cycle Prediction vs. Action-Required Pre-Conditioning**: Distinguished informational next cycle predictions (`Next Heat ~7:25 PM` / `Next Cool ~2:10 PM`, shown in a calm neutral badge when the thermostat is already actively maintaining the zone) from action-required pre-conditioning (`Pre-Heat @ HH:MM` / `Pre-Cool @ HH:MM`, shown only when HVAC is off, windows are open, or during extreme weather prep).
+- **Modal Learned Swing/Coast Attribute Resolution**: Added direct support for `learned_swing_heat_f`, `learned_swing_cool_f`, `learned_coast_f`, and `learned_coast_minutes` attributes on `sensor.hvac_time_to_temp_<zone>`.
+
 ## [1.2.0] - 2026-11-08
 
 ### Added

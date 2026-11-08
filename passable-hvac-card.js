@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.2.0
+ * Version: 1.2.1
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.2.0";
+const CARD_VERSION = "1.2.1";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -907,6 +907,16 @@ class PassableHvacCard extends LitElement {
     const preConditionNeeded = Boolean(timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.pre_condition_needed === true);
     const preConditionMode = (timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.pre_condition_mode) ? String(timeToTempObj.attributes.pre_condition_mode) : "";
     const preConditionStart = (timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.pre_condition_start_time) ? String(timeToTempObj.attributes.pre_condition_start_time) : "";
+    const nextCycleMode = (!preConditionNeeded && hvacAction === "idle" && timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.next_hvac_cycle_mode)
+      ? String(timeToTempObj.attributes.next_hvac_cycle_mode)
+      : "";
+    const nextCycleTime = (!preConditionNeeded && hvacAction === "idle" && timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.next_hvac_cycle_time)
+      ? String(timeToTempObj.attributes.next_hvac_cycle_time)
+      : "";
+    const nextTriggerTemp = (timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.next_hvac_trigger_temp !== undefined && timeToTempObj.attributes.next_hvac_trigger_temp !== null)
+      ? timeToTempObj.attributes.next_hvac_trigger_temp
+      : null;
+    const hasNextCycle = Boolean(nextCycleMode && nextCycleTime);
 
     let stateClass = "idle";
     let stateLabel = "Idle";
@@ -1004,6 +1014,7 @@ class PassableHvacCard extends LitElement {
       openWindowsCount > 0 ||
       isWindowDebouncing ||
       preConditionNeeded ||
+      hasNextCycle ||
       isFilterAlert ||
       isHealthAlert
     );
@@ -1114,9 +1125,19 @@ class PassableHvacCard extends LitElement {
                   : ""}
                 ${preConditionNeeded
                   ? html`
-                      <div class="passable-badge ${preConditionMode === 'cool' ? 'info' : 'warning'}" title="Dynamic rate-derived pre-conditioning recommended${preConditionStart ? ' starting at ' + preConditionStart : ''}">
+                      <div class="passable-badge ${preConditionMode === 'cool' ? 'info' : 'warning'}" title="Action recommended: start ${preConditionMode === 'cool' ? 'cooling' : 'heating'} / close windows${preConditionStart ? ' around ' + preConditionStart : ''} to recover before comfort threshold breach">
                         <ha-icon icon="mdi:clock-alert-outline"></ha-icon>
                         <span>Pre-${preConditionMode === 'cool' ? 'Cool' : 'Heat'}${preConditionStart ? ` @ ${preConditionStart}` : ''}</span>
+                      </div>
+                    `
+                  : hasNextCycle
+                  ? html`
+                      <div
+                        class="passable-badge badge-neutral"
+                        title="Thermostat is set to ${nextCycleMode === 'cool' ? 'Cool' : 'Heat'} — expected to automatically kick on around ${nextCycleTime}${nextTriggerTemp !== null ? ` (at ${nextTriggerTemp}°F)` : ''}. No action needed."
+                      >
+                        <ha-icon icon="mdi:clock-outline"></ha-icon>
+                        <span>Next ${nextCycleMode === 'cool' ? 'Cool' : 'Heat'} ~${nextCycleTime}</span>
                       </div>
                     `
                   : ""}
@@ -1328,10 +1349,21 @@ class PassableHvacCard extends LitElement {
       ? String(healthStatusObj.attributes.stall_reason)
       : "";
 
-    const learnedSwing = timeToTempObj?.attributes?.learned_deadband_swing_f;
-    const learnedCoastMag = timeToTempObj?.attributes?.learned_coast_magnitude_f;
-    const learnedCoastDur = timeToTempObj?.attributes?.learned_coast_duration_mins;
+    const isModalHeat = climate && (climate.state === "heat" || (climate.attributes && climate.attributes.hvac_action === "heating"));
+    const learnedSwing = timeToTempObj?.attributes?.learned_deadband_swing_f
+      ?? (isModalHeat ? timeToTempObj?.attributes?.learned_swing_heat_f : timeToTempObj?.attributes?.learned_swing_cool_f)
+      ?? timeToTempObj?.attributes?.learned_swing_heat_f;
+    const learnedCoastMag = timeToTempObj?.attributes?.learned_coast_magnitude_f
+      ?? timeToTempObj?.attributes?.learned_coast_f;
+    const learnedCoastDur = timeToTempObj?.attributes?.learned_coast_duration_mins
+      ?? timeToTempObj?.attributes?.learned_coast_minutes;
     const hasLearnedSwingCoast = learnedSwing !== undefined && learnedSwing !== null && !isNaN(parseFloat(learnedSwing));
+    const modalNextCycleMode = (!timeToTempObj?.attributes?.pre_condition_needed && timeToTempObj?.attributes?.next_hvac_cycle_mode)
+      ? String(timeToTempObj.attributes.next_hvac_cycle_mode)
+      : "";
+    const modalNextCycleTime = (!timeToTempObj?.attributes?.pre_condition_needed && timeToTempObj?.attributes?.next_hvac_cycle_time)
+      ? String(timeToTempObj.attributes.next_hvac_cycle_time)
+      : "";
 
     const advisorRecObj = this.hass?.states?.["sensor.passable_climate_window_recommendation"] || null;
     const sleepOffsetF = (isUpstairs && advisorRecObj && advisorRecObj.attributes && advisorRecObj.attributes.recommended_sleep_offset_f)
@@ -1937,7 +1969,7 @@ class PassableHvacCard extends LitElement {
                         <div class="hero-status-badges">
                           ${modalTimeStr
                             ? html`<span class="passable-badge ${modalHvacAction === 'heating' ? 'badge-heat' : 'badge-cool'}"><ha-icon icon="mdi:clock-fast"></ha-icon>~${modalTimeStr} to ${modalTargetTemp}°</span>`
-                            : html`<span class="passable-badge badge-neutral">${modalHvacAction === 'heating' ? 'Heating Active' : modalHvacAction === 'cooling' ? 'Cooling Active' : 'Holding Target'}</span>`}
+                            : html`<span class="passable-badge badge-neutral">${modalHvacAction === 'heating' ? 'Heating Active' : modalHvacAction === 'cooling' ? 'Cooling Active' : (modalNextCycleMode && modalNextCycleTime ? `Next ${modalNextCycleMode === 'cool' ? 'Cool' : 'Heat'} ~${modalNextCycleTime}` : 'Holding Target')}</span>`}
                           ${modalOvershootOn
                             ? html`<span class="passable-badge badge-overshoot"><ha-icon icon="mdi:delta"></ha-icon>Overshoot Active</span>`
                             : ""}
