@@ -5,6 +5,11 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-11-11
+
+### Fixed
+- **14D Compliance String Parsing**: Parses compliance percentage directly from string-formatted `compliance_summary` attributes on `sensor.passable_climate_window_recommendation`.
+
 ## [1.2.1] - 2026-11-08
 
 ### Changed

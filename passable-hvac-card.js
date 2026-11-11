@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.2.1
+ * Version: 1.2.2
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.2.1";
+const CARD_VERSION = "1.2.2";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -2655,9 +2655,16 @@ class PassableHvacCard extends LitElement {
                             <div class="passable-stat-block">
                               <span class="stat-block-label">14D COMPLIANCE</span>
                               <span class="stat-block-val" style="font-size:1.05rem; color:#4ade80;">
-                                ${(complianceSummary && complianceSummary.overall_compliance_pct !== undefined && complianceSummary.overall_compliance_pct !== null)
-                                  ? `${Math.round(parseFloat(complianceSummary.overall_compliance_pct))}%`
-                                  : "N/A"}
+                                ${(() => {
+                                  if (complianceSummary && typeof complianceSummary === "object" && complianceSummary.overall_compliance_pct !== undefined && complianceSummary.overall_compliance_pct !== null) {
+                                    return `${Math.round(parseFloat(complianceSummary.overall_compliance_pct))}%`;
+                                  }
+                                  if (typeof complianceSummary === "string") {
+                                    const m = complianceSummary.match(/\((\d+(?:\.\d+)?)%\)/);
+                                    if (m) return `${Math.round(parseFloat(m[1]))}%`;
+                                  }
+                                  return "N/A";
+                                })()}
                               </span>
                             </div>
                           </div>
