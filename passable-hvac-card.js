@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.2.2
+ * Version: 1.2.3
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.2.2";
+const CARD_VERSION = "1.2.3";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -180,13 +180,26 @@ class PassableHvacCard extends LitElement {
     });
   }
 
+  _getHvacTempStep(climate) {
+    const stepAttr = parseFloat(climate?.attributes?.target_temp_step);
+    if (!isNaN(stepAttr) && stepAttr > 0) return stepAttr;
+    const unit = climate?.attributes?.temperature_unit || this.hass?.config?.unit_system?.temperature;
+    return unit === "°C" ? 0.5 : 1;
+  }
+
   _adjustHvacTemp(climateEntity, delta) {
     this._fireHaptic("light");
     const climate = this._getEntity(climateEntity);
-    const curTarget = parseFloat(climate.attributes.temperature) || 70;
+    const curTarget = parseFloat(climate?.attributes?.temperature);
+    const baseTarget = !isNaN(curTarget) ? curTarget : 70;
+    let newTarget = Math.round((baseTarget + delta) * 10) / 10;
+    const minTemp = parseFloat(climate?.attributes?.min_temp);
+    const maxTemp = parseFloat(climate?.attributes?.max_temp);
+    if (!isNaN(minTemp)) newTarget = Math.max(minTemp, newTarget);
+    if (!isNaN(maxTemp)) newTarget = Math.min(maxTemp, newTarget);
     this.hass.callService("climate", "set_temperature", {
       entity_id: climateEntity,
-      temperature: curTarget + delta,
+      temperature: newTarget,
     });
   }
 
@@ -1385,7 +1398,11 @@ class PassableHvacCard extends LitElement {
     const modalHvacAction = (climate && climate.attributes && climate.attributes.hvac_action) || (climate && climate.state) || "idle";
     const modalCurrentTemp = (climate && climate.attributes && climate.attributes.current_temperature !== undefined) ? climate.attributes.current_temperature : "--";
     const modalHumidity = (climate && climate.attributes && climate.attributes.current_humidity !== undefined) ? climate.attributes.current_humidity : "--";
-    const modalTargetTemp = Math.round(parseFloat((climate && climate.attributes && climate.attributes.temperature) || 70));
+    const modalTempStep = this._getHvacTempStep(climate);
+    const modalTargetRaw = parseFloat(climate?.attributes?.temperature);
+    const modalTargetTemp = !isNaN(modalTargetRaw)
+      ? (modalTempStep < 1 ? Math.round(modalTargetRaw * 10) / 10 : Math.round(modalTargetRaw))
+      : 70;
     const modalTimeMins = (timeToTempObj && timeToTempObj.state && !isNaN(parseFloat(timeToTempObj.state))) ? Math.round(parseFloat(timeToTempObj.state)) : 0;
     const modalTimeStr = ((modalHvacAction === "cooling" || modalHvacAction === "heating") && modalTimeMins > 0) ? `~${modalTimeMins}m` : "";
     const modalOvershootOn = overshootActiveObj && overshootActiveObj.state === "on";
@@ -1991,9 +2008,9 @@ class PassableHvacCard extends LitElement {
                       <div class="hero-target-col">
                         <span class="hero-col-label">TARGET SETPOINT</span>
                         <div class="hero-stepper-pill">
-                          <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, -0.5)}>-</button>
+                          <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, -modalTempStep)}>-</button>
                           <span class="hero-step-val">${modalTargetTemp}°F</span>
-                          <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, 0.5)}>+</button>
+                          <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, modalTempStep)}>+</button>
                         </div>
                       </div>
                     </div>
