@@ -28,7 +28,7 @@ A dynamic, consolidated multi-system HVAC, heat pump, and comfort control custom
      * Window recommendation phase & overnight breach prediction banner with **Refresh** and **Retrain MLR** controls.
      * Psychrometric comparison pills (outdoor enthalpy, zone enthalpy delta, indoor vs. outdoor absolute humidity).
      * Forward Thermal Trajectory Simulation SVG (`sensor.advisor_simulation_data`) and MLR learning telemetry (`InfluxDB MLR` vs. `EWMA`, drift rate, swing/coast, 14-day compliance).
-     * Interactive ASHRAE 55 comfort envelope steppers (`comfort_temp_min/max`, `comfort_humidity_min/max`, `dew_point_max`, `hvac_transition_offset`).
+     * Interactive ASHRAE 55 comfort envelope steppers (`comfort_temp_min/max`, `comfort_humidity_min/max`, `dew_point_max`) and dedicated **HVAC Mode Transition** deadband control (`hvac_transition_offset`).
    * **Filter & Maint Tab**:
      * Visual filter lifespan progress bar, remaining percentage badge, runtime hours, formatted last-replaced date, lifespan stepper, and one-tap **Reset Filter Life Counter**.
 

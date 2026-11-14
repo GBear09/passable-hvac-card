@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.3.4";
+const CARD_VERSION = "1.3.5";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -166,7 +166,7 @@ class PassableHvacCard extends LitElement {
       "input_text.hvac_active_profile_override",
       "input_text.hvac_advisor_prediction_message",
       "input_boolean.hvac_advisor_predicts_heat_needed",
-      "input_number.hvac_transition_offset",
+      c.hvac_transition_offset_entity || "input_number.hvac_transition_offset",
       "sensor.advisor_simulation_data",
       "sensor.passable_climate_14d_comfort_compliance",
       "sensor.passable_climate_model_accuracy",
@@ -394,7 +394,13 @@ class PassableHvacCard extends LitElement {
     this._fireHaptic("light");
     const numObj = this._getEntity(entityId);
     const curVal = parseFloat(numObj.state) || 0;
-    const newVal = Math.max(0, Math.round((curVal + delta) * 10) / 10);
+    const attrMin = parseFloat(numObj?.attributes?.min);
+    const attrMax = parseFloat(numObj?.attributes?.max);
+    const minVal = !isNaN(attrMin) ? attrMin : 0;
+    const maxVal = !isNaN(attrMax) ? attrMax : null;
+    let newVal = Math.round((curVal + delta) * 10) / 10;
+    newVal = Math.max(minVal, newVal);
+    if (maxVal !== null) newVal = Math.min(maxVal, newVal);
     this._setNumberEntity(entityId, newVal);
   }
 
@@ -2432,6 +2438,17 @@ class PassableHvacCard extends LitElement {
     const bandMin = !isNaN(parseFloat(tempMinObj?.state)) ? parseFloat(tempMinObj.state) : null;
     const bandMax = !isNaN(parseFloat(tempMaxObj?.state)) ? parseFloat(tempMaxObj.state) : null;
 
+    const transOffsetId = this.config?.hvac_transition_offset_entity || "input_number.hvac_transition_offset";
+    const transOffsetObj = this._getEntity(transOffsetId);
+    const hasTransOffset = Boolean(transOffsetObj && transOffsetObj.state !== "unavailable" && transOffsetObj.state !== "unknown");
+    const transStepAttr = parseFloat(transOffsetObj?.attributes?.step);
+    const transStep = !isNaN(transStepAttr) && transStepAttr > 0 ? transStepAttr : 0.5;
+    const transUnit = transOffsetObj?.attributes?.unit_of_measurement || "°F";
+    const transVal = parseFloat(transOffsetObj?.state);
+    const transSubtext = (!isNaN(transVal) && bandMin !== null && bandMax !== null)
+      ? `Mode-switch buffer outside comfort limits (Cool → Heat < ${(bandMin - transVal).toFixed(1)}${transUnit} • Heat → Cool > ${(bandMax + transVal).toFixed(1)}${transUnit})`
+      : "Mode-switch hysteresis buffer preventing rapid Heat ↔ Cool transitions.";
+
     let complianceText = "N/A";
     if (complianceSensorObj && complianceSensorObj.state !== "unavailable" && complianceSensorObj.state !== "unknown" && !isNaN(parseFloat(complianceSensorObj.state))) {
       complianceText = `${Math.round(parseFloat(complianceSensorObj.state))}%`;
@@ -2745,7 +2762,7 @@ class PassableHvacCard extends LitElement {
           : ""}
       </div>
 
-      <!-- 4. INTERACTIVE ASHRAE 55 COMFORT ENVELOPE & TRANSITION CONTROLS -->
+      <!-- 4. INTERACTIVE ASHRAE 55 COMFORT ENVELOPE -->
       <div class="passable-section-card">
         <div class="passable-section-header" style="margin-bottom:8px;">
           <div class="passable-section-title">
@@ -2758,8 +2775,25 @@ class PassableHvacCard extends LitElement {
         ${this._renderComfortStepperRow("Humidity Min", "mdi:water-minus", "number.passable_climate_comfort_humidity_min", 1, "%", "#0284c7")}
         ${this._renderComfortStepperRow("Humidity Max", "mdi:water-plus", "number.passable_climate_comfort_humidity_max", 1, "%", "#6366f1")}
         ${this._renderComfortStepperRow("Dew Point Max", "mdi:weather-fog", "number.passable_climate_comfort_dew_point_max", 0.5, "°F", "#14b8a6")}
-        ${this._renderComfortStepperRow("Pre-Sleep Transition Offset", "mdi:weather-night", "input_number.hvac_transition_offset", 5, " min", "#a855f7")}
       </div>
+
+      ${hasTransOffset
+        ? html`
+            <!-- 5. HVAC MODE TRANSITION DEADBAND -->
+            <div class="passable-section-card">
+              <div class="passable-section-header" style="margin-bottom:6px;">
+                <div class="passable-section-title">
+                  <ha-icon icon="mdi:swap-vertical" style="--mdc-icon-size:18px; color:#a855f7;"></ha-icon>
+                  <span>HVAC MODE TRANSITION</span>
+                </div>
+              </div>
+              ${this._renderComfortStepperRow("Heat / Cool Transition Offset", "mdi:thermometer-plus", transOffsetId, transStep, transUnit, "#a855f7")}
+              <div style="font-size:0.70rem; color:var(--secondary-text-color); line-height:1.35; margin-top:6px;">
+                ${transSubtext}
+              </div>
+            </div>
+          `
+        : ""}
     `;
   }
 

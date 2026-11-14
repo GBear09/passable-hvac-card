@@ -5,6 +5,11 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.5] - 2026-11-14
+
+### Fixed & Changed
+- **HVAC Mode Transition Deadband Section**: Separated `input_number.hvac_transition_offset` out of **ASHRAE 55 COMFORT ENVELOPE** into its own **HVAC MODE TRANSITION** section on the **Advisor & Comfort** tab, replaced the misleading `"Pre-Sleep Transition Offset"` / `" min"` / `5`-step control with **Heat / Cool Transition Offset** reading the helper's `step` (`0.5`) and `unit_of_measurement` (`°F`), added a live summary of the resulting Cool→Heat / Heat→Cool mode-switch thresholds, and updated `_adjustNumberEntity` to clamp within `min`/`max` entity attributes.
+
 ## [1.3.4] - 2026-11-14
 
 ### Fixed
