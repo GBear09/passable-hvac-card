@@ -5,6 +5,12 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.4] - 2026-11-14
+
+### Fixed
+- **HVAC Filter Last Replaced Date**: Restored filter replacement date resolution in `_getZoneFilterMetrics` by checking `attributes.last_replaced` and `attributes.last_changed_<zone>` on both `sensor.hvac_filter_life_remaining_<zone>` and `sensor.hvac_<zone>_filter_runtime` prior to `last_reset`, normalized space-separated timestamps (`YYYY-MM-DD HH:MM:SS`) in `_formatShortDate` for Safari/iOS WebView compatibility, and surfaced `Changed <date>` in the Filter & Maint progress footer alongside a highlighted **Last Replaced** row.
+- **Popup Modal Tab Truncation**: Widened `.popup-content` (`max-width: 480px`) and replaced the single-row ellipsis tab strip with a responsive CSS grid (`4` stacked icon-above-label columns on standard screens, transitioning to a `2×2` horizontal-pill grid at `<= 460px`) so all four modal tab labels (**Setpoints**, **Stats & Power**, **Advisor & Comfort**, **Filter & Maint**) render cleanly without clipping at any screen width.
+
 ## [1.3.3] - 2026-11-14
 
 ### Added

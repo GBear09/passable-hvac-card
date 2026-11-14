@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.3.3";
+const CARD_VERSION = "1.3.4";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -1060,7 +1060,16 @@ class PassableHvacCard extends LitElement {
       : (remHours !== null && maxHours > 0 ? Math.max(0, Math.min(100, Math.round((remHours / maxHours) * 100))) : null);
 
     const computedUsed = usedHours !== null ? Math.round(usedHours * 10) / 10 : (remHours !== null ? Math.max(0, Math.round((maxHours - remHours) * 10) / 10) : 0);
-    const lastResetRaw = runtimeObj?.attributes?.last_reset || hoursObj?.attributes?.last_reset || null;
+    const lastResetRaw =
+      hoursObj?.attributes?.last_replaced ||
+      hoursObj?.attributes?.[`last_changed_${zone}`] ||
+      hoursObj?.attributes?.[`last_changed_${unitKey}`] ||
+      runtimeObj?.attributes?.last_replaced ||
+      runtimeObj?.attributes?.[`last_changed_${zone}`] ||
+      runtimeObj?.attributes?.[`last_changed_${unitKey}`] ||
+      runtimeObj?.attributes?.last_reset ||
+      hoursObj?.attributes?.last_reset ||
+      null;
     const isExpired = (percentRemaining !== null && percentRemaining <= 0) || (remHours !== null && remHours <= 0);
     const isLow = !isExpired && ((percentRemaining !== null && percentRemaining <= 25) || (remHours !== null && remHours <= 25));
 
@@ -1737,7 +1746,8 @@ class PassableHvacCard extends LitElement {
 
   _formatShortDate(rawVal) {
     if (!rawVal) return "";
-    const d = new Date(rawVal);
+    const normalized = String(rawVal).trim().replace(/^(\d{4}-\d{2}-\d{2})\s+/, "$1T");
+    const d = new Date(normalized);
     if (!isNaN(d.getTime())) {
       return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
     }
@@ -3711,6 +3721,7 @@ class PassableHvacCard extends LitElement {
                             </div>
                             <div class="filter-progress-meta">
                               <span>${filterMetrics.usedHours}h used</span>
+                              ${filterMetrics.lastResetRaw ? html`<span>Changed ${this._formatShortDate(filterMetrics.lastResetRaw)}</span>` : ""}
                               <span>${filterMetrics.remHours !== null ? `${Math.round(filterMetrics.remHours * 10) / 10}h remaining` : `${filterMetrics.maxHours}h limit`}</span>
                             </div>
                           </div>
@@ -3734,7 +3745,11 @@ class PassableHvacCard extends LitElement {
                               <ha-icon icon="mdi:calendar-check-outline"></ha-icon>
                               <span class="control-label">Last Replaced</span>
                             </div>
-                            <span class="control-value" style="font-size:0.85rem; color:var(--secondary-text-color);">
+                            <span
+                              class="control-value"
+                              style="font-size:0.85rem; font-weight:600; color:var(--primary-text-color);"
+                              title="${filterMetrics.lastResetRaw}"
+                            >
                               ${this._formatShortDate(filterMetrics.lastResetRaw)}
                             </span>
                           </div>
@@ -4957,10 +4972,10 @@ class PassableHvacCard extends LitElement {
 
       .popup-content {
         background-color: var(--ha-card-background, var(--card-background-color, #fff));
-        padding: 16px 20px 20px;
+        padding: 16px 18px 20px;
         border-radius: var(--ha-dialog-border-radius, var(--ha-card-border-radius, 24px));
         width: 100%;
-        max-width: 440px;
+        max-width: 480px;
         max-height: 90vh;
         overflow-y: auto;
         overflow-x: hidden;
@@ -4996,39 +5011,41 @@ class PassableHvacCard extends LitElement {
 
       /* POPUP TABS NAVIGATION (4-TAB RESPONSIVE) */
       .popup-tabs {
-        display: flex;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         background: var(--secondary-background-color, rgba(128, 128, 128, 0.12));
-        padding: 3px;
+        padding: 4px;
         border-radius: 14px;
-        gap: 3px;
+        gap: 4px;
         margin-bottom: 14px;
         width: 100%;
         box-sizing: border-box;
       }
       .popup-tab {
-        flex: 1;
         min-width: 0;
-        display: inline-flex;
+        display: flex;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 5px;
-        padding: 8px 6px;
+        gap: 3px;
+        padding: 7px 4px;
         border-radius: 10px;
         background: transparent;
         border: none;
         color: var(--secondary-text-color);
-        font-size: 0.74rem;
+        font-size: 0.72rem;
+        line-height: 1.15;
         font-weight: 600;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        text-align: center;
+        white-space: normal;
+        overflow: visible;
         cursor: pointer;
         transition: all 0.2s ease;
         user-select: none;
         box-sizing: border-box;
       }
       .popup-tab ha-icon {
-        --mdc-icon-size: 15px;
+        --mdc-icon-size: 16px;
         flex-shrink: 0;
       }
       .popup-tab:hover {
@@ -5044,12 +5061,15 @@ class PassableHvacCard extends LitElement {
       .popup-tab.active-tab ha-icon {
         color: var(--text-primary-color, #ffffff);
       }
-      @media (max-width: 440px) {
+      @media (max-width: 460px) {
+        .popup-tabs {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
         .popup-tab {
-          flex-direction: column;
-          gap: 2px;
-          padding: 6px 3px;
-          font-size: 0.65rem;
+          flex-direction: row;
+          gap: 6px;
+          padding: 8px 10px;
+          font-size: 0.76rem;
         }
         .popup-tab ha-icon {
           --mdc-icon-size: 16px;
