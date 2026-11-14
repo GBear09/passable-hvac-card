@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.3.1";
+const CARD_VERSION = "1.3.2";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -2235,7 +2235,24 @@ class PassableHvacCard extends LitElement {
     overrideObj,
   }) {
     const winMeta = this._formatWindowAdvisorLabel(advisorRecObj?.state);
-    const winReason = advisorRecObj?.attributes?.reason || advisorRecObj?.attributes?.recommended_action || advisorRecObj?.attributes?.phase || "";
+    let winReason = advisorRecObj?.attributes?.reason || advisorRecObj?.attributes?.recommended_action || "";
+    const rawDetails = advisorRecObj?.attributes?.details;
+    if (!winReason && typeof rawDetails === "string" && rawDetails.trim()) {
+      const detailLines = rawDetails
+        .split(/\r?\n/)
+        .map((l) => l.replace(/\*\*/g, "").trim())
+        .filter((l) => l && !/^Action Plan as of/i.test(l));
+      const zoneRegex = zone === "downstairs" ? /^Downstairs:\s*/i : /^Upstairs:\s*/i;
+      const zoneLine = detailLines.find((l) => zoneRegex.test(l));
+      const wholeLine = detailLines.find((l) => /^Whole House:\s*/i.test(l));
+      const pickedLine = zoneLine || wholeLine || detailLines.find((l) => !/^(Pre-Conditioning|\(|Note:)/i.test(l)) || detailLines[0];
+      if (pickedLine) {
+        winReason = pickedLine.replace(/^(Upstairs|Downstairs|Whole House):\s*/i, "").trim();
+      }
+    }
+    if (!winReason) {
+      winReason = advisorRecObj?.attributes?.phase || "";
+    }
     const outEnthalpyObj = this._getEntity("sensor.outdoor_specific_enthalpy");
     const zoneEnthalpyDeltaObj = this._getEntity(`sensor.${zone}_enthalpy_delta`);
     const zoneAhObj = this._getEntity(`sensor.${zone}_absolute_humidity`);
@@ -2295,32 +2312,71 @@ class PassableHvacCard extends LitElement {
     `;
 
     if (simPoints.length >= 2) {
+      const plotLeft = 32;
+      const plotRight = 304;
+      const plotWidth = plotRight - plotLeft;
+      const yGridPositions = [24, 48, 72, 96, 120];
+
       const temps = simPoints.map((p) => p.temp);
       if (bandMin !== null) temps.push(bandMin);
       if (bandMax !== null) temps.push(bandMax);
-      const yMin = Math.floor(Math.min(...temps) - 1);
-      const yMax = Math.ceil(Math.max(...temps) + 1);
+      const rawMin = Math.floor(Math.min(...temps) - 0.5);
+      const rawMax = Math.ceil(Math.max(...temps) + 0.5);
+      const stepT = Math.max(1, Math.ceil((rawMax - rawMin) / 4));
+      const yMin = rawMin;
+      const yMax = yMin + stepT * 4;
       const ySpan = Math.max(1, yMax - yMin);
-      const toX = (i) => 24 + (i / Math.max(1, simPoints.length - 1)) * 276;
-      const toY = (t) => 112 - ((t - yMin) / ySpan) * 92;
+      const toX = (i) => plotLeft + (i / Math.max(1, simPoints.length - 1)) * plotWidth;
+      const toY = (t) => 120 - ((t - yMin) / ySpan) * 96;
+
+      const tempTicks = yGridPositions.map((y, idx) => ({
+        y,
+        label: `${yMax - idx * stepT}°`,
+      }));
 
       const tempPath = "M " + simPoints.map((p, i) => `${toX(i).toFixed(1)} ${toY(p.temp).toFixed(1)}`).join(" L ");
       const hasHum = simPoints.every((p) => p.humidity !== null);
       let humPath = "";
+      let humTicks = [];
       if (hasHum) {
         const hums = simPoints.map((p) => p.humidity);
-        const hMin = Math.floor(Math.min(...hums) - 2);
-        const hMax = Math.ceil(Math.max(...hums) + 2);
+        const rawHMin = Math.max(0, Math.floor(Math.min(...hums) - 2));
+        const rawHMax = Math.min(100, Math.ceil(Math.max(...hums) + 2));
+        const stepH = Math.max(1, Math.ceil((rawHMax - rawHMin) / 4));
+        const hMax = Math.min(100, rawHMin + stepH * 4);
+        const hMin = Math.max(0, hMax - stepH * 4);
         const hSpan = Math.max(1, hMax - hMin);
-        const toHY = (h) => 112 - ((h - hMin) / hSpan) * 92;
+        const toHY = (h) => 120 - ((h - hMin) / hSpan) * 96;
         humPath = "M " + simPoints.map((p, i) => `${toX(i).toFixed(1)} ${toHY(p.humidity).toFixed(1)}`).join(" L ");
+        humTicks = yGridPositions.map((y, idx) => ({
+          y,
+          label: `${hMax - idx * stepH}%`,
+        }));
       }
+
+      const baseSimTimeMs = simDataObj?.state && !isNaN(Date.parse(simDataObj.state))
+        ? Date.parse(simDataObj.state)
+        : Date.now();
+      const formatClockHour = (stepIdx) => {
+        const dt = new Date(baseSimTimeMs + (stepIdx + 1) * 3600000);
+        const hr24 = dt.getHours();
+        const hr12 = hr24 % 12 || 12;
+        return `${hr12}${hr24 < 12 ? "a" : "p"}`;
+      };
+      const tickIndices = [...new Set(
+        [0, 1, 2, 3, 4].map((k) => Math.round((k * (simPoints.length - 1)) / 4))
+      )];
+      const xAxisTicks = tickIndices.map((idx) => ({
+        x: toX(idx),
+        horizon: `+${idx + 1}h`,
+        clock: formatClockHour(idx),
+      }));
 
       const startPt = simPoints[0];
       const endPt = simPoints[simPoints.length - 1];
       const deltaT = endPt.temp - startPt.temp;
-      const bandTopY = bandMax !== null ? toY(bandMax) : null;
-      const bandBotY = bandMin !== null ? toY(bandMin) : null;
+      const bandTopY = bandMax !== null ? Math.max(24, Math.min(120, toY(bandMax))) : null;
+      const bandBotY = bandMin !== null ? Math.max(24, Math.min(120, toY(bandMin))) : null;
 
       simSvgHtml = html`
         <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.72rem; margin-bottom:6px; color:var(--secondary-text-color);">
@@ -2330,17 +2386,32 @@ class PassableHvacCard extends LitElement {
             ${hasHum ? html`<span style="display:inline-flex; align-items:center; gap:3px;"><span style="width:8px; height:2px; background:#a855f7; display:inline-block;"></span>RH</span>` : ""}
           </span>
         </div>
-        <div style="width:100%; aspect-ratio: 2.35 / 1;">
-          <svg viewBox="0 0 320 128" style="width:100%; height:100%; overflow:visible;">
+        <div style="width:100%; aspect-ratio: 2.18 / 1;">
+          <svg viewBox="0 0 340 156" style="width:100%; height:100%; overflow:visible;">
+            <text x="4" y="11" fill="#38bdf8" font-size="9.5" font-weight="700">Temp (°F)</text>
+            ${hasHum ? svg`<text x="336" y="11" fill="#a855f7" font-size="9.5" font-weight="700" text-anchor="end">RH (%)</text>` : ""}
             ${bandTopY !== null && bandBotY !== null
-              ? svg`<rect x="24" y="${Math.min(bandTopY, bandBotY)}" width="276" height="${Math.max(2, Math.abs(bandBotY - bandTopY))}" fill="rgba(34,197,94,0.10)" rx="4"/>`
+              ? svg`<rect x="${plotLeft}" y="${Math.min(bandTopY, bandBotY)}" width="${plotWidth}" height="${Math.max(2, Math.abs(bandBotY - bandTopY))}" fill="rgba(34,197,94,0.10)" rx="4"/>`
               : ""}
-            <line x1="24" y1="20" x2="300" y2="20" stroke="var(--divider-color, rgba(148,163,184,0.22))" stroke-dasharray="3 3"/>
-            <text x="2" y="24" fill="var(--secondary-text-color, #94a3b8)" font-size="9">${yMax}°</text>
-            <line x1="24" y1="66" x2="300" y2="66" stroke="var(--divider-color, rgba(148,163,184,0.18))" stroke-dasharray="3 3"/>
-            <text x="2" y="70" fill="var(--secondary-text-color, #94a3b8)" font-size="9">${Math.round((yMax + yMin) / 2)}°</text>
-            <line x1="24" y1="112" x2="300" y2="112" stroke="var(--divider-color, rgba(148,163,184,0.28))"/>
-            <text x="2" y="115" fill="var(--secondary-text-color, #94a3b8)" font-size="9">${yMin}°</text>
+            ${tempTicks.map((tick, idx) => svg`
+              <line
+                x1="${plotLeft}"
+                y1="${tick.y}"
+                x2="${plotRight}"
+                y2="${tick.y}"
+                stroke="${idx === tempTicks.length - 1 ? 'var(--secondary-text-color, rgba(148,163,184,0.45))' : 'var(--divider-color, rgba(148,163,184,0.22))'}"
+                stroke-dasharray="${idx === tempTicks.length - 1 ? 'none' : '3 3'}"
+              />
+              <text x="28" y="${tick.y + 3}" fill="var(--secondary-text-color, #94a3b8)" font-size="9.5" font-weight="600" text-anchor="end">${tick.label}</text>
+            `)}
+            ${hasHum ? humTicks.map((tick) => svg`
+              <text x="308" y="${tick.y + 3}" fill="#a855f7" font-size="9.5" font-weight="600" text-anchor="start" opacity="0.9">${tick.label}</text>
+            `) : ""}
+            ${xAxisTicks.map((xt) => svg`
+              <line x1="${xt.x.toFixed(1)}" y1="120" x2="${xt.x.toFixed(1)}" y2="124" stroke="var(--secondary-text-color, rgba(148,163,184,0.5))"/>
+              <text x="${xt.x.toFixed(1)}" y="135" fill="var(--primary-text-color, #e2e8f0)" font-size="9" font-weight="700" text-anchor="middle">${xt.horizon}</text>
+              <text x="${xt.x.toFixed(1)}" y="147" fill="var(--secondary-text-color, #94a3b8)" font-size="8.5" font-weight="500" text-anchor="middle">${xt.clock}</text>
+            `)}
             ${humPath ? svg`<path d="${humPath}" fill="none" stroke="#a855f7" stroke-width="1.6" stroke-dasharray="3 3" opacity="0.85"/>` : ""}
             <path d="${tempPath}" fill="none" stroke="#38bdf8" stroke-width="2.4" stroke-linecap="round"/>
             <circle cx="${toX(0)}" cy="${toY(startPt.temp)}" r="3.5" fill="#38bdf8"/>
@@ -2423,7 +2494,7 @@ class PassableHvacCard extends LitElement {
             <ha-icon icon="mdi:chart-bell-curve-cumulative" style="--mdc-icon-size:18px; color:#38bdf8;"></ha-icon>
             <span>THERMAL TRAJECTORY SIMULATION</span>
           </div>
-          ${simPoints.length >= 2 ? html`<span class="passable-count-pill">${simPoints.length} Steps</span>` : ""}
+          ${simPoints.length >= 2 ? html`<span class="passable-count-pill">${simPoints.length}h Horizon</span>` : ""}
         </div>
         ${simSvgHtml}
       </div>

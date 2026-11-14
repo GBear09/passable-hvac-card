@@ -5,6 +5,11 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-11-14
+
+### Fixed
+- **Thermal Trajectory Simulation Axis Labels & Action Plan Text**: Upgraded the **Advisor & Comfort** trajectory chart SVG to render proper `svg`-namespaced nodes across a 5-gridline dual Y-axis (`Temp (°F)` on the left, `RH (%)` on the right) and timestamped X-axis (`+1h`..`+12h` horizon offsets and local clock hours derived from `sensor.advisor_simulation_data`). Also parsed zone-specific action plan summaries from `sensor.passable_climate_window_recommendation` `attributes.details` instead of falling back to the phase name.
+
 ## [1.3.1] - 2026-11-13
 
 ### Fixed
