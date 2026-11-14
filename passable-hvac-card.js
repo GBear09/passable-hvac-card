@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.2.3";
+const CARD_VERSION = "1.3.0";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -56,9 +56,241 @@ class PassableHvacCard extends LitElement {
     this._hvacGraphMode = "multiday";
     this._hvacTimelineRes = 15;
     this._hvacHistoryCache = {};
+    this._analyticsMemo = {};
     this._expandedSensorUnits = {};
     this._expandedModalSections = {};
     this._cardId = `phc-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  _getHvacSystems() {
+    const c = this.config || {};
+    return c.systems || c.hvac_systems || [
+      { key: "upstairs", name: "Upstairs", icon: "mdi:home-floor-2", climate: c.upstairs_climate_hk || c.upstairs_climate || "climate.upstairs_hk" },
+      { key: "downstairs", name: "Downstairs", icon: "mdi:home-floor-1", climate: c.downstairs_climate_hk || c.downstairs_climate || "climate.downstairs_hk" }
+    ];
+  }
+
+  _resolveZoneClimate(unitKey, sysConfig = {}) {
+    const c = this.config || {};
+    const zone = (unitKey || sysConfig.key || "downstairs").toLowerCase();
+    const configuredPrimary = sysConfig.climate || c[`${unitKey}_climate_hk`] || c[`${unitKey}_climate`];
+    const configuredCompanion = sysConfig.climate_companion || sysConfig.ecobee_climate || c[`${unitKey}_climate_companion`];
+    const configuredHk = sysConfig.climate_hk || c[`${unitKey}_climate_hk`];
+
+    let controlId = configuredPrimary;
+    let companionId = configuredCompanion || null;
+
+    if (!controlId) {
+      controlId = this._hasEntity(`climate.${zone}_hk`) ? `climate.${zone}_hk` : `climate.${zone}`;
+    }
+
+    if (!companionId) {
+      if (/_hk$/i.test(controlId)) {
+        const candidate = controlId.replace(/_hk$/i, "");
+        if (candidate !== controlId && this._hasEntity(candidate)) {
+          companionId = candidate;
+        }
+      } else {
+        const ecobeeCandidate = c[`${unitKey}_climate`];
+        if (ecobeeCandidate && ecobeeCandidate !== controlId && this._hasEntity(ecobeeCandidate)) {
+          companionId = ecobeeCandidate;
+        } else if (configuredHk && configuredHk !== controlId && this._hasEntity(configuredHk)) {
+          // Primary is Ecobee; keep HK reference if available
+          companionId = null;
+        }
+      }
+    }
+
+    const controlObj = this._getEntity(controlId);
+    const companionObj = companionId ? this._getEntity(companionId) : null;
+    const isValid = (obj) => !!(obj && obj.state && obj.state !== "unavailable" && obj.state !== "unknown");
+
+    const controlValid = isValid(controlObj);
+    const companionValid = isValid(companionObj);
+    const effectiveControlId = controlValid ? controlId : (companionValid ? companionId : controlId);
+    const effectiveControlObj = this._getEntity(effectiveControlId);
+
+    const compTemp = companionObj?.attributes?.current_temperature;
+    const ctrlTemp = effectiveControlObj?.attributes?.current_temperature;
+    const currentTemp = (companionValid && compTemp != null && !isNaN(parseFloat(compTemp)))
+      ? parseFloat(compTemp)
+      : (ctrlTemp != null && !isNaN(parseFloat(ctrlTemp)) ? parseFloat(ctrlTemp) : null);
+
+    const compHum = companionObj?.attributes?.current_humidity;
+    const ctrlHum = effectiveControlObj?.attributes?.current_humidity;
+    const currentHumidity = (companionValid && compHum != null && !isNaN(parseFloat(compHum)))
+      ? parseFloat(compHum)
+      : (ctrlHum != null && !isNaN(parseFloat(ctrlHum)) ? parseFloat(ctrlHum) : null);
+
+    const compPresets = companionObj?.attributes?.preset_modes;
+    const ctrlPresets = effectiveControlObj?.attributes?.preset_modes;
+    const hasCompPresets = companionValid && Array.isArray(compPresets) && compPresets.length > 0;
+    const hasCtrlPresets = Array.isArray(ctrlPresets) && ctrlPresets.length > 0;
+
+    const presetEntityId = hasCompPresets ? companionId : (hasCtrlPresets ? effectiveControlId : (companionId || effectiveControlId));
+    const presetSourceObj = this._getEntity(presetEntityId);
+    const presetModes = Array.isArray(presetSourceObj?.attributes?.preset_modes) ? presetSourceObj.attributes.preset_modes : [];
+    const activePresetMode = presetSourceObj?.attributes?.preset_mode || null;
+    const climateModeName = companionObj?.attributes?.climate_mode || activePresetMode;
+
+    return {
+      zone,
+      controlId: effectiveControlId,
+      configuredControlId: controlId,
+      companionId,
+      controlObj: effectiveControlObj,
+      companionObj,
+      presetEntityId,
+      presetModes,
+      activePresetMode,
+      climateModeName,
+      currentTemp,
+      currentHumidity,
+      hvacModes: Array.isArray(effectiveControlObj?.attributes?.hvac_modes) && effectiveControlObj.attributes.hvac_modes.length > 0
+        ? effectiveControlObj.attributes.hvac_modes
+        : (Array.isArray(companionObj?.attributes?.hvac_modes) ? companionObj.attributes.hvac_modes : ["off", "heat", "cool", "heat_cool"]),
+      equipmentRunning: companionObj?.attributes?.equipment_running || "",
+      fanMinOnTime: companionObj?.attributes?.fan_min_on_time != null ? companionObj.attributes.fan_min_on_time : null,
+      activeSensors: Array.isArray(companionObj?.attributes?.active_sensors) ? companionObj.attributes.active_sensors : [],
+    };
+  }
+
+  _getWatchedEntityIds() {
+    const c = this.config || {};
+    const ids = new Set([
+      c.global_setpoint_preset || "input_select.home_mode",
+      c.outdoor_temp_sensor || "sensor.outside_temperature",
+      c.outdoor_weather_entity || "weather.home",
+      c.window_recommendation_entity || "sensor.passable_climate_window_recommendation",
+      "input_text.hvac_active_profile",
+      "input_text.hvac_active_profile_override",
+      "input_text.hvac_advisor_prediction_message",
+      "input_boolean.hvac_advisor_predicts_heat_needed",
+      "input_number.hvac_transition_offset",
+      "sensor.advisor_simulation_data",
+      "sensor.passable_climate_14d_comfort_compliance",
+      "sensor.passable_climate_model_accuracy",
+      "sensor.outdoor_specific_enthalpy",
+      "sensor.outside_absolute_humidity",
+      "sensor.total_hvac_power",
+      "sensor.span_panel_air_handler_attic_power",
+      "sensor.span_panel_ac_condenser_power",
+      "sensor.span_panel_air_handler_basement_power",
+      "sensor.span_panel_ac_condenser_2_power",
+      "number.passable_climate_comfort_temp_min",
+      "number.passable_climate_comfort_temp_max",
+      "number.passable_climate_comfort_humidity_min",
+      "number.passable_climate_comfort_humidity_max",
+      "number.passable_climate_comfort_dew_point_max",
+      "button.passable_climate_refresh_window_recommendation",
+      "button.passable_climate_retrain_thermal_models",
+    ]);
+
+    const systems = this._getHvacSystems();
+    systems.forEach((sys) => {
+      const unitKey = sys.key || "downstairs";
+      const zone = unitKey.toLowerCase();
+      const baseClimate = sys.climate || c[`${unitKey}_climate_hk`] || c[`${unitKey}_climate`] || `climate.${zone}_hk`;
+      ids.add(baseClimate);
+      ids.add(baseClimate.replace(/_hk$/i, ""));
+      if (sys.climate_companion) ids.add(sys.climate_companion);
+      if (sys.climate_hk) ids.add(sys.climate_hk);
+      if (sys.setpoint_preset) ids.add(sys.setpoint_preset);
+      if (c[`${unitKey}_climate`]) ids.add(c[`${unitKey}_climate`]);
+      if (c[`${unitKey}_climate_hk`]) ids.add(c[`${unitKey}_climate_hk`]);
+      if (c[`${unitKey}_setpoint_preset`]) ids.add(c[`${unitKey}_setpoint_preset`]);
+      if (c[`${unitKey}_overshoot_active`]) ids.add(c[`${unitKey}_overshoot_active`]);
+      if (c[`${unitKey}_filter_hours`]) ids.add(c[`${unitKey}_filter_hours`]);
+      if (c[`${unitKey}_filter_life`]) ids.add(c[`${unitKey}_filter_life`]);
+      if (c[`${unitKey}_heating_today_sensor`]) ids.add(c[`${unitKey}_heating_today_sensor`]);
+      if (c[`${unitKey}_cooling_today_sensor`]) ids.add(c[`${unitKey}_cooling_today_sensor`]);
+
+      [
+        `sensor.hvac_${zone}_heating_today`,
+        `sensor.hvac_${zone}_cooling_today`,
+        `sensor.hvac_${zone}_fan_today`,
+        `sensor.hvac_${zone}_heating_daily`,
+        `sensor.hvac_${zone}_cooling_daily`,
+        `sensor.hvac_${zone}_cycles_per_hour`,
+        `sensor.hvac_${zone}_filter_runtime`,
+        `sensor.hvac_filter_life_remaining_${zone}`,
+        `number.hvac_filter_life_${zone}`,
+        `button.reset_hvac_filter_${zone}`,
+        `input_boolean.hvac_overshoot_active_${zone}`,
+        `input_boolean.hvac_fan_circulation_active_${zone}`,
+        `input_boolean.hvac_${zone}_coasting`,
+        `input_number.hvac_fan_circulation_${zone}`,
+        `sensor.${zone}_heat_loss_rate`,
+        `sensor.${zone}_cool_loss_rate`,
+        `sensor.${zone}_enthalpy_delta`,
+        `sensor.${zone}_absolute_humidity`,
+        `binary_sensor.${zone}_windows_open`,
+        `sensor.${zone}_window_open_count`,
+      ].forEach((id) => ids.add(id));
+
+      if (Array.isArray(sys.sensors)) {
+        sys.sensors.forEach((s) => {
+          const eid = typeof s === "string" ? s : s?.entity;
+          if (eid) ids.add(eid);
+        });
+      }
+      if (Array.isArray(sys.span_power_entities)) {
+        sys.span_power_entities.forEach((eid) => eid && ids.add(eid));
+      }
+      if (Array.isArray(sys.window_entities)) {
+        sys.window_entities.forEach((eid) => eid && ids.add(eid));
+      }
+    });
+
+    if (this.hass && this.hass.states) {
+      const roomDefaults = [
+        "sensor.master_bedroom_temperature",
+        "sensor.maggies_room_temperature",
+        "sensor.maxs_room_temperature",
+        "sensor.upstairs_temperature",
+        "sensor.madeleines_room_temperature",
+        "sensor.office_temperature",
+        "sensor.living_room_temperature",
+        "sensor.downstairs_temperature",
+        "sensor.kitchen_temperature",
+        "sensor.bathroom_temperature",
+        "sensor.playroom_temperature",
+        "sensor.basement_temperature",
+      ];
+      roomDefaults.forEach((id) => ids.add(id));
+
+      Object.keys(this.hass.states).forEach((entId) => {
+        if (
+          entId.includes("_heat_loss_gain_windows_") ||
+          entId.includes("hvac_overshoot_") ||
+          entId.startsWith("input_number.hvac_") && (entId.includes("_day_") || entId.includes("_sleep_") || entId.includes("_away_") || entId.includes("_eco_"))
+        ) {
+          ids.add(entId);
+        }
+      });
+    }
+
+    return Array.from(ids);
+  }
+
+  shouldUpdate(changedProps) {
+    if (!changedProps.has("hass")) return true;
+    for (const key of changedProps.keys()) {
+      if (key !== "hass") return true;
+    }
+    const oldHass = changedProps.get("hass");
+    const newHass = this.hass;
+    if (!oldHass || !newHass || !oldHass.states || !newHass.states) return true;
+    if (!this.config) return true;
+
+    const watched = this._getWatchedEntityIds();
+    for (let i = 0; i < watched.length; i++) {
+      const id = watched[i];
+      if (oldHass.states[id] !== newHass.states[id]) {
+        return true;
+      }
+    }
+    return false;
   }
 
   setConfig(config) {
@@ -164,18 +396,40 @@ class PassableHvacCard extends LitElement {
     this._setNumberEntity(entityId, newVal);
   }
 
-  _setHvacMode(climateEntity, mode) {
+  _setHvacMode(climateEntity, mode, companionId = null) {
     this._fireHaptic("medium");
+    const targetObj = this._getEntity(climateEntity);
+    const fallbackObj = companionId ? this._getEntity(companionId) : null;
+    const useFallback = (!targetObj || targetObj.state === "unavailable" || targetObj.state === "unknown") && fallbackObj && fallbackObj.state !== "unavailable";
+    const activeId = useFallback ? companionId : climateEntity;
+    const activeObj = useFallback ? fallbackObj : targetObj;
+    const supported = Array.isArray(activeObj?.attributes?.hvac_modes) ? activeObj.attributes.hvac_modes : [];
+
+    let mappedMode = mode;
+    if (supported.length > 0 && !supported.includes(mode)) {
+      if (mode === "auto" && supported.includes("heat_cool")) mappedMode = "heat_cool";
+      else if (mode === "heat_cool" && supported.includes("auto")) mappedMode = "auto";
+    }
+
     this.hass.callService("climate", "set_hvac_mode", {
-      entity_id: climateEntity,
-      hvac_mode: mode,
+      entity_id: activeId,
+      hvac_mode: mappedMode,
     });
   }
 
   _setHvacPresetMode(climateEntity, presetMode) {
     this._fireHaptic("medium");
+    let targetId = climateEntity;
+    const primaryObj = this._getEntity(climateEntity);
+    const hasPrimaryPresets = Array.isArray(primaryObj?.attributes?.preset_modes) && primaryObj.attributes.preset_modes.length > 0;
+    if (!hasPrimaryPresets && climateEntity && /_hk$/i.test(climateEntity)) {
+      const companionCandidate = climateEntity.replace(/_hk$/i, "");
+      if (this._hasEntity(companionCandidate)) {
+        targetId = companionCandidate;
+      }
+    }
     this.hass.callService("climate", "set_preset_mode", {
-      entity_id: climateEntity,
+      entity_id: targetId,
       preset_mode: presetMode,
     });
   }
@@ -187,20 +441,79 @@ class PassableHvacCard extends LitElement {
     return unit === "°C" ? 0.5 : 1;
   }
 
-  _adjustHvacTemp(climateEntity, delta) {
+  _adjustHvacTemp(climateEntity, delta, rangeBound = null) {
     this._fireHaptic("light");
     const climate = this._getEntity(climateEntity);
-    const curTarget = parseFloat(climate?.attributes?.temperature);
-    const baseTarget = !isNaN(curTarget) ? curTarget : 70;
-    let newTarget = Math.round((baseTarget + delta) * 10) / 10;
     const minTemp = parseFloat(climate?.attributes?.min_temp);
     const maxTemp = parseFloat(climate?.attributes?.max_temp);
-    if (!isNaN(minTemp)) newTarget = Math.max(minTemp, newTarget);
-    if (!isNaN(maxTemp)) newTarget = Math.min(maxTemp, newTarget);
+    const clamp = (val) => {
+      let v = Math.round(val * 10) / 10;
+      if (!isNaN(minTemp)) v = Math.max(minTemp, v);
+      if (!isNaN(maxTemp)) v = Math.min(maxTemp, v);
+      return v;
+    };
+
+    const low = parseFloat(climate?.attributes?.target_temp_low);
+    const high = parseFloat(climate?.attributes?.target_temp_high);
+    if ((climate?.state === "heat_cool" || climate?.state === "auto") && !isNaN(low) && !isNaN(high)) {
+      if (rangeBound === "low") {
+        const nextLow = Math.min(high - 1, clamp(low + delta));
+        this.hass.callService("climate", "set_temperature", {
+          entity_id: climateEntity,
+          target_temp_low: nextLow,
+          target_temp_high: high,
+        });
+        return;
+      }
+      if (rangeBound === "high") {
+        const nextHigh = Math.max(low + 1, clamp(high + delta));
+        this.hass.callService("climate", "set_temperature", {
+          entity_id: climateEntity,
+          target_temp_low: low,
+          target_temp_high: nextHigh,
+        });
+        return;
+      }
+      const nextLow = clamp(low + delta);
+      const nextHigh = clamp(high + delta);
+      this.hass.callService("climate", "set_temperature", {
+        entity_id: climateEntity,
+        target_temp_low: nextLow,
+        target_temp_high: nextHigh,
+      });
+      return;
+    }
+
+    const curTarget = parseFloat(climate?.attributes?.temperature);
+    const baseTarget = !isNaN(curTarget) ? curTarget : 70;
+    const newTarget = clamp(baseTarget + delta);
     this.hass.callService("climate", "set_temperature", {
       entity_id: climateEntity,
       temperature: newTarget,
     });
+  }
+
+  _adjustFanMinOnTime(companionEntity, deltaMinutes, fallbackNumberId = null) {
+    this._fireHaptic("light");
+    const compObj = companionEntity ? this._getEntity(companionEntity) : null;
+    if (companionEntity && compObj && compObj.attributes && compObj.attributes.fan_min_on_time != null && this.hass?.services?.ecobee?.set_fan_min_on_time) {
+      const cur = parseFloat(compObj.attributes.fan_min_on_time) || 0;
+      const next = Math.max(0, Math.min(55, Math.round(cur + deltaMinutes)));
+      this.hass.callService("ecobee", "set_fan_min_on_time", {
+        entity_id: companionEntity,
+        fan_min_on_time: next,
+      });
+      return;
+    }
+    if (fallbackNumberId && this._hasEntity(fallbackNumberId)) {
+      this._adjustNumberEntity(fallbackNumberId, deltaMinutes);
+    }
+  }
+
+  _pressButtonEntity(entityId) {
+    if (!entityId || !this._hasEntity(entityId)) return;
+    this._fireHaptic("medium");
+    this.hass.callService("button", "press", { entity_id: entityId });
   }
 
   _adjustFilterLifeAndHours(filterHoursId, filterLifeId, delta) {
@@ -269,10 +582,27 @@ class PassableHvacCard extends LitElement {
     return "var(--primary-color)";
   }
 
+  _ensureHistoryFetched(unitKey, sysConfig = null) {
+    if (!this.hass || !unitKey) return;
+    const c = this.config || {};
+    const systems = this._getHvacSystems();
+    const sys = sysConfig || systems.find((s) => s.key === unitKey) || { key: unitKey, name: unitKey };
+    const zoneClimate = this._resolveZoneClimate(unitKey, sys);
+    const zone = zoneClimate.zone;
+    const climateId = zoneClimate.controlId;
+    const outdoorTempId = c.outdoor_temp_sensor || "sensor.outside_temperature";
+    const coolDailySensorId = c[`${unitKey}_cooling_daily_sensor`] || `sensor.hvac_${zone}_cooling_daily`;
+    const heatDailySensorId = c[`${unitKey}_heating_daily_sensor`] || `sensor.hvac_${zone}_heating_daily`;
+    const coolTodaySensorId = c[`${unitKey}_cooling_today_sensor`] || `sensor.hvac_${zone}_cooling_today`;
+    const heatTodaySensorId = c[`${unitKey}_heating_today_sensor`] || `sensor.hvac_${zone}_heating_today`;
+    this._fetchHvacHistoryData(unitKey, climateId, outdoorTempId, coolDailySensorId, heatDailySensorId, coolTodaySensorId, heatTodaySensorId);
+  }
+
   _showHvacModal(unitKey, type) {
     this._fireHaptic("light");
     this._activeHvacTab = type || "setpoints";
-    this._hvacModal = { unitKey, type };
+    this._hvacModal = { unitKey, type: this._activeHvacTab };
+    this._ensureHistoryFetched(unitKey);
     this.requestUpdate();
   }
 
@@ -281,6 +611,9 @@ class PassableHvacCard extends LitElement {
     this._activeHvacTab = tabName;
     if (this._hvacModal) {
       this._hvacModal.type = tabName;
+      if (tabName === "stats" || tabName === "advisor") {
+        this._ensureHistoryFetched(this._hvacModal.unitKey);
+      }
     }
     this.requestUpdate();
   }
@@ -586,6 +919,253 @@ class PassableHvacCard extends LitElement {
     }
   }
 
+  _getZonePowerMetrics(zone, sysConfig = {}) {
+    const z = (zone || "").toLowerCase();
+    const explicit = Array.isArray(sysConfig.span_power_entities) ? sysConfig.span_power_entities : null;
+    const defaultIds = z === "upstairs"
+      ? ["sensor.span_panel_air_handler_attic_power", "sensor.span_panel_ac_condenser_power"]
+      : z === "downstairs"
+      ? ["sensor.span_panel_air_handler_basement_power", "sensor.span_panel_ac_condenser_2_power"]
+      : [];
+    const entityIds = explicit || defaultIds;
+
+    let airHandlerW = null;
+    let condenserW = null;
+    let totalW = 0;
+    let count = 0;
+
+    entityIds.forEach((eid, idx) => {
+      const obj = this._getEntity(eid);
+      const val = parseFloat(obj?.state);
+      if (!isNaN(val)) {
+        totalW += val;
+        count++;
+        if (idx === 0 || eid.includes("air_handler")) airHandlerW = (airHandlerW || 0) + val;
+        else if (idx === 1 || eid.includes("condenser")) condenserW = (condenserW || 0) + val;
+      }
+    });
+
+    const formatted = count > 0
+      ? (totalW >= 1000 ? `${(totalW / 1000).toFixed(2)}kW` : `${Math.round(totalW * 10) / 10}W`)
+      : null;
+
+    return {
+      airHandlerW,
+      condenserW,
+      totalW: count > 0 ? Math.round(totalW * 10) / 10 : null,
+      formatted,
+      hasPower: count > 0,
+      entityIds,
+    };
+  }
+
+  _getTotalHvacPower(systems) {
+    const totalObj = this._getEntity("sensor.total_hvac_power");
+    const totalNum = parseFloat(totalObj?.state);
+    if (!isNaN(totalNum)) {
+      return {
+        watts: Math.round(totalNum * 10) / 10,
+        formatted: totalNum >= 1000 ? `${(totalNum / 1000).toFixed(2)}kW` : `${totalNum.toFixed(1)}W`,
+        entityId: "sensor.total_hvac_power",
+      };
+    }
+    let sum = 0;
+    let hasAny = false;
+    (systems || []).forEach((sys) => {
+      const p = this._getZonePowerMetrics(sys.key, sys);
+      if (p.hasPower && p.totalW !== null) {
+        sum += p.totalW;
+        hasAny = true;
+      }
+    });
+    return {
+      watts: hasAny ? Math.round(sum * 10) / 10 : null,
+      formatted: hasAny ? (sum >= 1000 ? `${(sum / 1000).toFixed(2)}kW` : `${sum.toFixed(1)}W`) : null,
+      entityId: null,
+    };
+  }
+
+  _getZoneWindowState(zone, sysConfig = {}) {
+    const c = this.config || {};
+    const z = (zone || "").toLowerCase();
+    const candidates = [
+      sysConfig.open_windows_count,
+      c[`${zone}_open_windows_count`],
+      `sensor.${z}_window_open_count`,
+      `sensor.${z}_open_windows_count`,
+    ].filter(Boolean);
+
+    let count = 0;
+    let pendingDebounceCount = 0;
+    let countObj = null;
+
+    for (const cid of candidates) {
+      const st = this.hass?.states?.[cid];
+      if (st && st.state !== "unavailable" && st.state !== "unknown") {
+        const parsed = parseInt(st.state, 10);
+        if (!isNaN(parsed)) {
+          count = parsed;
+          countObj = st;
+          if (Array.isArray(st.attributes?.pending_debounce_sensors)) {
+            pendingDebounceCount = st.attributes.pending_debounce_sensors.length;
+          }
+          break;
+        }
+      }
+    }
+
+    if (!countObj) {
+      const binObj = this.hass?.states?.[`binary_sensor.${z}_windows_open`];
+      if (binObj && binObj.state === "on") {
+        count = 1;
+      }
+    }
+
+    return {
+      openCount: count,
+      pendingDebounceCount,
+      isDebouncing: count === 0 && pendingDebounceCount > 0,
+    };
+  }
+
+  _getZoneFilterMetrics(unitKey, sysConfig = {}) {
+    const c = this.config || {};
+    const zone = (unitKey || "downstairs").toLowerCase();
+    const runtimeId = sysConfig.filter_runtime || `sensor.hvac_${zone}_filter_runtime`;
+    const hoursId = sysConfig.filter_hours || c[`${unitKey}_filter_hours`] || `sensor.hvac_filter_life_remaining_${zone}`;
+    const lifeId = sysConfig.filter_life || c[`${unitKey}_filter_life`] || (this._hasEntity(`number.hvac_filter_life_${zone}`) ? `number.hvac_filter_life_${zone}` : `input_number.hvac_filter_life_${zone}`);
+
+    const runtimeObj = this._getEntity(runtimeId);
+    const hoursObj = this._getEntity(hoursId);
+    const lifeObj = this._getEntity(lifeId);
+
+    const lifeNum = parseFloat(lifeObj?.state);
+    const attrMax = parseFloat(runtimeObj?.attributes?.max_hours ?? hoursObj?.attributes?.capacity_hours);
+    const maxHours = !isNaN(lifeNum) && lifeNum > 0 ? lifeNum : (!isNaN(attrMax) && attrMax > 0 ? attrMax : 300);
+
+    const attrRuntime = parseFloat(runtimeObj?.attributes?.runtime_hours);
+    const stateRuntime = parseFloat(runtimeObj?.state);
+    const usedHours = !isNaN(attrRuntime) ? attrRuntime : (!isNaN(stateRuntime) ? stateRuntime : null);
+
+    const stateRem = parseFloat(hoursObj?.state);
+    const remHours = !isNaN(stateRem)
+      ? stateRem
+      : (usedHours !== null ? Math.max(0, Math.round((maxHours - usedHours) * 10) / 10) : null);
+
+    const attrPct = parseFloat(runtimeObj?.attributes?.percent_remaining);
+    const percentRemaining = !isNaN(attrPct)
+      ? Math.max(0, Math.min(100, Math.round(attrPct)))
+      : (remHours !== null && maxHours > 0 ? Math.max(0, Math.min(100, Math.round((remHours / maxHours) * 100))) : null);
+
+    const computedUsed = usedHours !== null ? Math.round(usedHours * 10) / 10 : (remHours !== null ? Math.max(0, Math.round((maxHours - remHours) * 10) / 10) : 0);
+    const lastResetRaw = runtimeObj?.attributes?.last_reset || hoursObj?.attributes?.last_reset || null;
+    const isExpired = (percentRemaining !== null && percentRemaining <= 0) || (remHours !== null && remHours <= 0);
+    const isLow = !isExpired && ((percentRemaining !== null && percentRemaining <= 25) || (remHours !== null && remHours <= 25));
+
+    return {
+      runtimeId,
+      hoursId,
+      lifeId,
+      maxHours,
+      usedHours: computedUsed,
+      remHours,
+      percentRemaining,
+      lastResetRaw,
+      isExpired,
+      isLow,
+      isAlert: isExpired || isLow,
+    };
+  }
+
+  _formatWindowAdvisorLabel(rawState) {
+    if (!rawState || rawState === "unavailable" || rawState === "unknown") return { text: "Advisor Standby", tone: "neutral" };
+    const clean = String(rawState).trim();
+    const low = clean.toLowerCase();
+    const formatted = clean
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, (ch) => ch.toUpperCase());
+    if (low.includes("open")) return { text: formatted, tone: "open" };
+    if (low.includes("close")) return { text: formatted, tone: "close" };
+    return { text: formatted, tone: "neutral" };
+  }
+
+  _renderSmartClimateSummaryStrip(systems) {
+    const c = this.config || {};
+    const winRecObj = this._getEntity(c.window_recommendation_entity || "sensor.passable_climate_window_recommendation");
+    const profileObj = this._getEntity("input_text.hvac_active_profile");
+    const overrideObj = this._getEntity("input_text.hvac_active_profile_override");
+    const globalPresetObj = this._getEntity(c.global_setpoint_preset);
+    const outdoorObj = this._getEntity(c.outdoor_temp_sensor || "sensor.outside_temperature");
+    const weatherObj = this._getEntity(c.outdoor_weather_entity || "weather.home");
+    const heatPredictObj = this._getEntity("input_boolean.hvac_advisor_predicts_heat_needed");
+
+    const winMeta = this._formatWindowAdvisorLabel(winRecObj?.state);
+    const overrideText = overrideObj?.state && overrideObj.state !== "unavailable" && overrideObj.state !== "unknown" && overrideObj.state.trim() !== "" ? overrideObj.state.trim() : null;
+    const activeProfile = overrideText
+      || (profileObj?.state && profileObj.state !== "unavailable" && profileObj.state !== "unknown" ? profileObj.state : null)
+      || (globalPresetObj?.state && globalPresetObj.state !== "unavailable" && globalPresetObj.state !== "unknown" ? globalPresetObj.state : null);
+
+    let outTemp = parseFloat(outdoorObj?.state);
+    if (isNaN(outTemp) && weatherObj?.attributes?.temperature != null) {
+      outTemp = parseFloat(weatherObj.attributes.temperature);
+    }
+    const outTempStr = !isNaN(outTemp) ? `${Math.round(outTemp)}°` : "--";
+
+    const powerSummary = this._getTotalHvacPower(systems);
+    const totalOpenWindows = (systems || []).reduce((acc, s) => acc + this._getZoneWindowState(s.key, s).openCount, 0);
+    const hasHeatPrediction = heatPredictObj?.state === "on";
+    const hasAttention = hasHeatPrediction || totalOpenWindows > 0;
+    const firstUnitKey = systems?.[0]?.key || "upstairs";
+
+    return html`
+      <div
+        class="hvac-summary-strip ${winMeta.tone}"
+        @click=${() => this._showHvacModal(firstUnitKey, "advisor")}
+        title="Smart Climate Advisor: Tap for comfort envelope, psychrometrics & forecast trajectory"
+      >
+        <div class="summary-strip-left">
+          <span class="summary-status-dot ${winMeta.tone}"></span>
+          <span class="summary-win-label">${winMeta.text}</span>
+          ${activeProfile
+            ? html`
+                <span class="summary-sep">•</span>
+                <span class="summary-profile-pill" title="Active Thermal Profile">
+                  <ha-icon icon="${this._getPresetIcon(activeProfile)}"></ha-icon>
+                  <span>${activeProfile}</span>
+                </span>
+              `
+            : ""}
+        </div>
+
+        <div class="summary-strip-right">
+          <span class="summary-metric" title="Outdoor Temperature">
+            <ha-icon icon="mdi:thermometer"></ha-icon>
+            <span>Out ${outTempStr}</span>
+          </span>
+          ${powerSummary.formatted
+            ? html`
+                <span class="summary-sep">•</span>
+                <span class="summary-metric ${powerSummary.watts > 350 ? 'power-active' : ''}" title="Total Live HVAC Power Draw">
+                  <ha-icon icon="mdi:lightning-bolt"></ha-icon>
+                  <span>${powerSummary.formatted}</span>
+                </span>
+              `
+            : ""}
+          ${hasAttention
+            ? html`
+                <span
+                  class="summary-alert-dot ${hasHeatPrediction ? 'heat' : 'open'}"
+                  title="${hasHeatPrediction ? 'Overnight heating recovery predicted — tap for details' : `${totalOpenWindows} window(s) open`}"
+                >
+                  <ha-icon icon="${hasHeatPrediction ? 'mdi:alert-outline' : 'mdi:window-open-variant'}"></ha-icon>
+                </span>
+              `
+            : ""}
+        </div>
+      </div>
+    `;
+  }
+
   render() {
     if (!this.hass || !this.config) return html``;
 
@@ -634,6 +1214,7 @@ class PassableHvacCard extends LitElement {
           : ""}
 
         <div class="card-content ${c.show_header === false ? 'no-header' : ''}">
+          ${c.show_advisor_strip !== false ? this._renderSmartClimateSummaryStrip(systems) : ""}
           <div class="hvac-grid">
             ${systems.map((sys) => this._renderHvacUnitCard(sys.key, sys.name, sys.icon, sys.climate, sys))}
           </div>
@@ -644,7 +1225,15 @@ class PassableHvacCard extends LitElement {
     `;
   }
 
-  _getCleanRoomName(rawName) {
+  _getCleanRoomName(rawName, entId = "") {
+    const eidLow = String(entId || "").toLowerCase();
+    const rawLow = String(rawName || "").toLowerCase();
+    if (eidLow === "sensor.upstairs_temperature" || rawLow.includes("upstairs thermostat")) {
+      return "Upstairs Hall";
+    }
+    if (eidLow === "sensor.downstairs_temperature" || rawLow.includes("downstairs thermostat")) {
+      return "Dining / Hall";
+    }
     if (!rawName) return "";
     let name = rawName
       .replace(/ecobee sensor/gi, "")
@@ -660,6 +1249,8 @@ class PassableHvacCard extends LitElement {
       .replace(/\s*bedroom\b/gi, "")
       .replace(/\s*room\b/gi, "")
       .trim();
+    if (rawLow.includes("bonus room") && name.toLowerCase() === "bonus") return "Bonus Room";
+    if (rawLow.includes("downstairs bath") && name.toLowerCase().includes("downstairs bath")) return "Downstairs Bath";
     return name || rawName;
   }
 
@@ -700,59 +1291,79 @@ class PassableHvacCard extends LitElement {
     const explicit = sysConfig.sensors || (c.sensors && c.sensors[unitKey]);
 
     // Resolve climate entity & companion Ecobee entity for active_sensors / available_sensors
-    const climateKey = sysConfig.climate || c[`${unitKey}_climate`] || defaultClimateId;
-    const climateState = this.hass.states[climateKey] || 
-                         this.hass.states[`climate.${unitKey}`] || 
-                         (defaultClimateId ? this.hass.states[defaultClimateId] : null);
+    const zoneClimate = this._resolveZoneClimate(unitKey, { climate: defaultClimateId, ...sysConfig });
+    const activeSensors = zoneClimate.activeSensors || [];
+    const availableSensors = (zoneClimate.companionObj?.attributes?.available_sensors)
+      || (zoneClimate.controlObj?.attributes?.available_sensors)
+      || [];
 
-    let sensorClimateState = climateState;
-    if (!sensorClimateState?.attributes?.active_sensors) {
-      const strippedKey = climateKey ? String(climateKey).replace(/_hk$/, "") : "";
-      if (strippedKey && this.hass.states[strippedKey]?.attributes?.active_sensors) {
-        sensorClimateState = this.hass.states[strippedKey];
-      } else if (this.hass.states[`climate.${unitKey}`]?.attributes?.active_sensors) {
-        sensorClimateState = this.hass.states[`climate.${unitKey}`];
-      }
-    }
+    const excludeThermostatAuto = sysConfig.exclude_thermostat_sensor !== false && c.exclude_thermostat_sensor !== false;
+    const excludeThermostatExplicit = sysConfig.exclude_thermostat_sensor === true || c.exclude_thermostat_sensor === true;
 
-    const activeSensors = (sensorClimateState && sensorClimateState.attributes && Array.isArray(sensorClimateState.attributes.active_sensors))
-      ? sensorClimateState.attributes.active_sensors
-      : [];
-    const availableSensors = (sensorClimateState && sensorClimateState.attributes && Array.isArray(sensorClimateState.attributes.available_sensors))
-      ? sensorClimateState.attributes.available_sensors
-      : [];
+    const checkSensorActive = (roomLabel, rawName = "", entId = "") => {
+      if (!Array.isArray(activeSensors) || activeSensors.length === 0) return false;
+      const targets = new Set();
+      [roomLabel, rawName, this._getCleanRoomName(rawName, entId)].forEach((label) => {
+        if (!label) return;
+        const norm = String(label)
+          .replace(/ecobee sensor|temperature|temp|sensor/gi, "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, "");
+        if (norm) targets.add(norm);
+      });
+      if (entId === "sensor.upstairs_temperature") targets.add("upstairsthermostat");
+      if (entId === "sensor.downstairs_temperature") targets.add("downstairsthermostat");
+      if (targets.size === 0) return false;
 
-    const excludeThermostat = sysConfig.exclude_thermostat_sensor !== false && c.exclude_thermostat_sensor !== false;
-
-    const checkSensorActive = (roomLabel) => {
-      if (!roomLabel || !Array.isArray(activeSensors) || activeSensors.length === 0) return false;
-      const targetClean = this._getCleanRoomName(roomLabel).toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (!targetClean) return false;
       return activeSensors.some((act) => {
-        const actClean = this._getCleanRoomName(act).toLowerCase().replace(/[^a-z0-9]/g, "");
-        return actClean && (actClean.includes(targetClean) || targetClean.includes(actClean));
+        const actRawNorm = String(act).toLowerCase().replace(/[^a-z0-9]/g, "");
+        const actCleanNorm = this._getCleanRoomName(act).toLowerCase().replace(/[^a-z0-9]/g, "");
+        for (const t of targets) {
+          if ((actRawNorm && (actRawNorm.includes(t) || t.includes(actRawNorm))) ||
+              (actCleanNorm && (actCleanNorm.includes(t) || t.includes(actCleanNorm)))) {
+            return true;
+          }
+        }
+        return false;
       });
     };
 
     const advisorRecObj = this.hass?.states?.["sensor.passable_climate_window_recommendation"];
     const limitingRoomEntity = advisorRecObj?.attributes?.sleep_limiting_room_entity || null;
-    const openWinCountObj = this.hass?.states?.[`sensor.${unitKey}_open_windows_count`];
-    const hasOpenWindows = openWinCountObj && !isNaN(parseInt(openWinCountObj.state, 10)) && parseInt(openWinCountObj.state, 10) > 0;
+    const winState = this._getZoneWindowState(unitKey, sysConfig);
+    const hasOpenWindows = winState.openCount > 0;
 
-    const resolveRoomPassiveRate = (entId, roomLabel) => {
+    const resolveRoomPassiveRate = (entId, roomLabel, rawFriendly = "") => {
       if (!this.hass || !this.hass.states) return null;
       const suffix = hasOpenWindows ? "open" : "closed";
-      const candidates = [];
-      if (roomLabel) {
-        const slug = String(roomLabel).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-        if (slug) candidates.push(`sensor.${slug}_heat_loss_gain_windows_${suffix}`);
-      }
+      const candidateSlugs = [];
+      const addSlug = (s) => {
+        const clean = String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+        if (clean && !candidateSlugs.includes(clean)) candidateSlugs.push(clean);
+      };
+
       if (entId) {
         const entSlug = String(entId).replace(/^sensor\./, "").replace(/_temperature$/, "").replace(/_temp$/, "");
-        if (entSlug) candidates.push(`sensor.${entSlug}_heat_loss_gain_windows_${suffix}`);
+        addSlug(entSlug);
+        if (entSlug === "downstairs") addSlug("dining_room");
+        if (entSlug === "upstairs") addSlug("upstairs");
+        if (entSlug === "bathroom") addSlug("bathroom");
+        if (entSlug === "basement") addSlug("basement");
       }
-      for (const cid of candidates) {
-        const st = this.hass.states[cid];
+      if (roomLabel) {
+        const rSlug = String(roomLabel).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+        addSlug(rSlug);
+        if (rSlug === "dining_hall") addSlug("dining_room");
+        if (rSlug === "downstairs_bath") addSlug("bathroom");
+        if (rSlug === "upstairs_hall") addSlug("upstairs");
+        if (rSlug === "bonus_room") addSlug("basement");
+      }
+      if (rawFriendly) {
+        addSlug(rawFriendly.replace(/ecobee sensor|temperature|thermostat/gi, ""));
+      }
+
+      for (const slug of candidateSlugs) {
+        const st = this.hass.states[`sensor.${slug}_heat_loss_gain_windows_${suffix}`];
         if (st && st.state !== "unavailable" && st.state !== "unknown" && !isNaN(parseFloat(st.state))) {
           const val = parseFloat(st.state);
           return `${val >= 0 ? "+" : ""}${val.toFixed(1)}°/h`;
@@ -766,20 +1377,20 @@ class PassableHvacCard extends LitElement {
         const entId = typeof item === "string" ? item : item.entity;
         const stateObj = this.hass.states[entId];
         if (!stateObj) return null;
-        const rawFriendlyName = (typeof item === "object" && item.name) ? item.name : (stateObj.attributes.friendly_name || entId);
-        
-        // Filter out thermostat's own internal sensor (e.g. "Upstairs Thermostat")
-        const isThermostat = rawFriendlyName.toLowerCase().includes("thermostat") ||
-                             entId.toLowerCase().includes("thermostat") ||
-                             (climateKey && entId.toLowerCase().includes(climateKey.replace("climate.", "")));
-        if (excludeThermostat && isThermostat) return null;
+        const hasCustomName = Boolean(typeof item === "object" && item.name);
+        const rawFriendlyName = hasCustomName ? item.name : (stateObj.attributes.friendly_name || entId);
 
-        const cleanName = this._getCleanRoomName(rawFriendlyName);
+        if (excludeThermostatExplicit) {
+          const isThermostat = rawFriendlyName.toLowerCase().includes("thermostat") || entId.toLowerCase().includes("thermostat");
+          if (isThermostat) return null;
+        }
+
+        const cleanName = hasCustomName ? item.name : this._getCleanRoomName(rawFriendlyName, entId);
         const rawTemp = parseFloat(stateObj.state);
         const temp = !isNaN(rawTemp) ? Math.round(rawTemp * 10) / 10 : stateObj.state;
         const unit = stateObj.attributes.unit_of_measurement || "°";
-        const isActive = checkSensorActive(cleanName || rawFriendlyName);
-        const passiveRate = resolveRoomPassiveRate(entId, cleanName || rawFriendlyName);
+        const isActive = checkSensorActive(cleanName, rawFriendlyName, entId);
+        const passiveRate = resolveRoomPassiveRate(entId, cleanName, rawFriendlyName);
         const isLimiting = Boolean(limitingRoomEntity && entId === limitingRoomEntity);
         return {
           entityId: entId,
@@ -809,7 +1420,7 @@ class PassableHvacCard extends LitElement {
       availableSensors.forEach((sensorStr) => {
         let cleanName = sensorStr.replace(/\([0-9a-fA-F]{20,}\)/g, "").trim();
         const isMainThermostat = cleanName.toLowerCase().includes("thermostat");
-        if (excludeThermostat && isMainThermostat) return; // Keep remote room sensors only
+        if (excludeThermostatAuto && isMainThermostat) return;
 
         cleanName = cleanName.replace(/ecobee sensor/gi, "").replace(/[()]/g, "").trim();
 
@@ -831,9 +1442,9 @@ class PassableHvacCard extends LitElement {
           const rawTemp = parseFloat(match.state);
           const temp = !isNaN(rawTemp) ? Math.round(rawTemp * 10) / 10 : match.state;
           const unit = match.attributes.unit_of_measurement || "°";
-          const shortName = this._getCleanRoomName(match.attributes.friendly_name || cleanName);
-          const isActive = checkSensorActive(shortName || cleanName);
-          const passiveRate = resolveRoomPassiveRate(match.entity_id, shortName || cleanName);
+          const shortName = this._getCleanRoomName(match.attributes.friendly_name || cleanName, match.entity_id);
+          const isActive = checkSensorActive(shortName || cleanName, match.attributes.friendly_name || cleanName, match.entity_id);
+          const passiveRate = resolveRoomPassiveRate(match.entity_id, shortName || cleanName, match.attributes.friendly_name || cleanName);
           const isLimiting = Boolean(limitingRoomEntity && match.entity_id === limitingRoomEntity);
           discovered.push({
             entityId: match.entity_id,
@@ -859,44 +1470,41 @@ class PassableHvacCard extends LitElement {
 
   _renderHvacUnitCard(unitKey, title, icon, defaultClimate, sysConfig = {}) {
     const c = this.config;
-    const climateId = sysConfig.climate || c[`${unitKey}_climate_hk`] || c[`${unitKey}_climate`] || defaultClimate;
-    const presetId = sysConfig.setpoint_preset || c[`${unitKey}_setpoint_preset`] || "input_text.hvac_active_profile";
-    const overshootActiveId = sysConfig.overshoot_active || c[`${unitKey}_overshoot_active`] || `input_boolean.hvac_overshoot_active_${unitKey}`;
-    const coolOvershootId = sysConfig.cool_overshoot || c[`${unitKey}_cool_overshoot`] || "input_number.hvac_overshoot_amount_cool";
-    const heatOvershootId = sysConfig.heat_overshoot || c[`${unitKey}_heat_overshoot`] || "input_number.hvac_overshoot_amount_heat";
-    const filterHoursId = sysConfig.filter_hours || c[`${unitKey}_filter_hours`] || `sensor.hvac_filter_life_remaining_${unitKey}`;
-    const filterLifeId = sysConfig.filter_life || c[`${unitKey}_filter_life`] || (this.hass?.states?.[`number.hvac_filter_life_${unitKey}`] ? `number.hvac_filter_life_${unitKey}` : `input_number.hvac_filter_life_${unitKey}`);
-    const timeToTempId = sysConfig.time_to_temp || c[`${unitKey}_time_to_temp`] || `sensor.hvac_time_to_temp_${unitKey}`;
-    const healthStatusId = sysConfig.health_status || c[`${unitKey}_health_status`] || `sensor.hvac_health_status_${unitKey}`;
-    const fanCircActiveId = sysConfig.fan_circ_active || c[`${unitKey}_fan_circ_active`] || `input_boolean.hvac_fan_circulation_active_${unitKey}`;
-    const lastActivityId = sysConfig.last_activity || c[`${unitKey}_last_activity`] || `sensor.hvac_last_activity_${unitKey}`;
-    const openWindowsCountId = sysConfig.open_windows_count || c[`${unitKey}_open_windows_count`] || `sensor.${unitKey}_open_windows_count`;
+    const zoneClimate = this._resolveZoneClimate(unitKey, { climate: defaultClimate, ...sysConfig });
+    const climateId = zoneClimate.controlId;
+    const zone = zoneClimate.zone;
+    const climate = zoneClimate.controlObj;
 
-    const climate = this._getEntity(climateId);
-    const preset = this._getEntity(presetId);
-    const overshootActiveObj = this._getEntity(overshootActiveId);
-    const heatOvershoot = this._getEntity(heatOvershootId);
-    const coolOvershoot = this._getEntity(coolOvershootId);
-    const filterHours = this._getEntity(filterHoursId);
-    const filterLife = this._getEntity(filterLifeId);
+    const timeToTempId = sysConfig.time_to_temp || c[`${unitKey}_time_to_temp`] || `sensor.hvac_time_to_temp_${zone}`;
+    const healthStatusId = sysConfig.health_status || c[`${unitKey}_health_status`] || `sensor.hvac_health_status_${zone}`;
+    const fanCircActiveId = sysConfig.fan_circ_active || c[`${unitKey}_fan_circ_active`] || `input_boolean.hvac_fan_circulation_active_${zone}`;
+    const lastActivityId = sysConfig.last_activity || c[`${unitKey}_last_activity`] || `sensor.hvac_last_activity_${zone}`;
+    const coastingBoolId = `input_boolean.hvac_${zone}_coasting`;
+
     const timeToTempObj = this._getEntity(timeToTempId);
     const healthStatusObj = this._getEntity(healthStatusId);
     const fanCircActiveObj = this._getEntity(fanCircActiveId);
     const lastActivityObj = this.hass?.states?.[lastActivityId] || null;
-    const openWinObj = this.hass?.states?.[openWindowsCountId] || null;
-
+    const coastingBoolObj = this.hass?.states?.[coastingBoolId] || null;
+    const filterMetrics = this._getZoneFilterMetrics(unitKey, sysConfig);
+    const winState = this._getZoneWindowState(unitKey, sysConfig);
     const systemSensors = this._getSystemSensors(unitKey, sysConfig, climateId);
 
     const hvacAction = climate.attributes.hvac_action || climate.state || "idle";
-    const currentTemp = climate.attributes.current_temperature ?? "--";
-    
-    // Round target setpoint to integer (e.g. 73.9 -> 74°)
-    const targetRaw = climate.attributes.temperature ?? climate.attributes.target_temp_high ?? climate.attributes.target_temp_low;
-    const targetTemp = targetRaw !== undefined && targetRaw !== null && !isNaN(parseFloat(targetRaw))
-      ? Math.round(parseFloat(targetRaw))
-      : "--";
+    const currentTemp = zoneClimate.currentTemp !== null ? zoneClimate.currentTemp.toFixed(1) : "--";
 
-    const humidity = climate.attributes.current_humidity ?? "--";
+    const mode = (climate.state || climate.attributes.hvac_mode || "").toLowerCase();
+    const lowTarget = climate.attributes.target_temp_low;
+    const highTarget = climate.attributes.target_temp_high;
+    const targetRaw = climate.attributes.temperature ?? highTarget ?? lowTarget;
+    let targetDisplay = "--";
+    if ((mode === "heat_cool" || mode === "auto") && lowTarget != null && highTarget != null && !isNaN(parseFloat(lowTarget)) && !isNaN(parseFloat(highTarget))) {
+      targetDisplay = `${Math.round(parseFloat(lowTarget))}–${Math.round(parseFloat(highTarget))}`;
+    } else if (targetRaw !== undefined && targetRaw !== null && !isNaN(parseFloat(targetRaw))) {
+      targetDisplay = `${Math.round(parseFloat(targetRaw))}`;
+    }
+
+    const humidity = zoneClimate.currentHumidity !== null ? Math.round(zoneClimate.currentHumidity) : "--";
 
     const timeToTempMins = (timeToTempObj && timeToTempObj.state && !isNaN(parseFloat(timeToTempObj.state)))
       ? Math.round(parseFloat(timeToTempObj.state))
@@ -909,50 +1517,37 @@ class PassableHvacCard extends LitElement {
       ? String(healthStatusObj.state)
       : "Optimal";
     const isHealthAlert = healthState !== "Optimal" && healthState !== "Healthy";
-    const stallReason = (healthStatusObj && healthStatusObj.attributes && healthStatusObj.attributes.stall_reason)
-      ? String(healthStatusObj.attributes.stall_reason)
-      : "";
+    const stallReason = healthStatusObj?.attributes?.stall_reason ? String(healthStatusObj.attributes.stall_reason) : "";
     const isFanCircActive = fanCircActiveObj && fanCircActiveObj.state === "on";
-    const isCoasting = Boolean(hvacAction === "idle" && lastActivityObj && lastActivityObj.attributes && lastActivityObj.attributes.is_coasting === true);
-    const openWindowsCount = (openWinObj && openWinObj.state && !isNaN(parseInt(openWinObj.state, 10))) ? parseInt(openWinObj.state, 10) : 0;
-    const pendingDebounceCount = (openWinObj && openWinObj.attributes && Array.isArray(openWinObj.attributes.pending_debounce_sensors)) ? openWinObj.attributes.pending_debounce_sensors.length : 0;
-    const isWindowDebouncing = openWindowsCount === 0 && pendingDebounceCount > 0;
+    const isCoasting = Boolean(
+      hvacAction === "idle" &&
+      ((lastActivityObj && lastActivityObj.attributes && lastActivityObj.attributes.is_coasting === true) ||
+       (coastingBoolObj && coastingBoolObj.state === "on"))
+    );
     const preConditionNeeded = Boolean(timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.pre_condition_needed === true);
-    const preConditionMode = (timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.pre_condition_mode) ? String(timeToTempObj.attributes.pre_condition_mode) : "";
-    const preConditionStart = (timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.pre_condition_start_time) ? String(timeToTempObj.attributes.pre_condition_start_time) : "";
-    const nextCycleMode = (!preConditionNeeded && hvacAction === "idle" && timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.next_hvac_cycle_mode)
-      ? String(timeToTempObj.attributes.next_hvac_cycle_mode)
-      : "";
-    const nextCycleTime = (!preConditionNeeded && hvacAction === "idle" && timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.next_hvac_cycle_time)
-      ? String(timeToTempObj.attributes.next_hvac_cycle_time)
-      : "";
-    const nextTriggerTemp = (timeToTempObj && timeToTempObj.attributes && timeToTempObj.attributes.next_hvac_trigger_temp !== undefined && timeToTempObj.attributes.next_hvac_trigger_temp !== null)
-      ? timeToTempObj.attributes.next_hvac_trigger_temp
-      : null;
-    const hasNextCycle = Boolean(nextCycleMode && nextCycleTime);
+    const preConditionMode = timeToTempObj?.attributes?.pre_condition_mode ? String(timeToTempObj.attributes.pre_condition_mode) : "";
+    const preConditionStart = timeToTempObj?.attributes?.pre_condition_start_time ? String(timeToTempObj.attributes.pre_condition_start_time) : "";
 
     let stateClass = "idle";
     let stateLabel = "Idle";
     let stateIcon = "mdi:hvac-off";
     let dynamicCardStyle = "";
 
-    const mode = (climate.state || climate.attributes.hvac_mode || "").toLowerCase();
-
     if (hvacAction === "cooling") {
       stateClass = "active-cool";
       stateLabel = "Cooling";
       stateIcon = "mdi:snowflake";
-      dynamicCardStyle = "background: rgba(var(--rgb-info-color, 3, 169, 244), 0.10); border-color: rgba(var(--rgb-info-color, 3, 169, 244), 0.45); box-shadow: 0 4px 14px rgba(var(--rgb-info-color, 3, 169, 244), 0.16);";
+      dynamicCardStyle = "background: rgba(var(--rgb-info-color, 3, 169, 244), 0.10); border-color: rgba(var(--rgb-info-color, 3, 169, 244), 0.45); box-shadow: 0 3px 12px rgba(var(--rgb-info-color, 3, 169, 244), 0.14);";
     } else if (hvacAction === "heating") {
       stateClass = "active-heat";
       stateLabel = "Heating";
       stateIcon = "mdi:fire";
-      dynamicCardStyle = "background: rgba(var(--rgb-warning-color, 255, 152, 0), 0.10); border-color: rgba(var(--rgb-warning-color, 255, 152, 0), 0.45); box-shadow: 0 4px 14px rgba(var(--rgb-warning-color, 255, 152, 0), 0.16);";
+      dynamicCardStyle = "background: rgba(var(--rgb-warning-color, 255, 152, 0), 0.10); border-color: rgba(var(--rgb-warning-color, 255, 152, 0), 0.45); box-shadow: 0 3px 12px rgba(var(--rgb-warning-color, 255, 152, 0), 0.14);";
     } else if (hvacAction === "fan") {
       stateClass = "active-fan";
       stateLabel = "Fan Only";
       stateIcon = "mdi:fan";
-      dynamicCardStyle = "background: rgba(var(--rgb-success-color, 76, 175, 80), 0.10); border-color: rgba(var(--rgb-success-color, 76, 175, 80), 0.45); box-shadow: 0 4px 14px rgba(var(--rgb-success-color, 76, 175, 80), 0.16);";
+      dynamicCardStyle = "background: rgba(var(--rgb-success-color, 76, 175, 80), 0.10); border-color: rgba(var(--rgb-success-color, 76, 175, 80), 0.45); box-shadow: 0 3px 12px rgba(var(--rgb-success-color, 76, 175, 80), 0.14);";
     } else if (mode === "cool") {
       stateClass = "idle-cool";
       stateLabel = "Cool (Idle)";
@@ -967,38 +1562,11 @@ class PassableHvacCard extends LitElement {
       stateIcon = "mdi:theme-light-dark";
     } else if (mode === "off") {
       stateClass = "power-off";
-      stateLabel = "System Off";
+      stateLabel = "Off";
       stateIcon = "mdi:power";
     }
 
-    // Filter calculations & alert
-    const remHours = (filterHours && filterHours.state !== "unavailable" && filterHours.state !== "unknown" && !isNaN(parseFloat(filterHours.state)))
-      ? parseFloat(filterHours.state)
-      : null;
-    const isFilterExpired = remHours !== null && remHours <= 0;
-    const isFilterWarning = remHours !== null && remHours > 0 && remHours <= 10;
-    const isFilterAlert = isFilterExpired || isFilterWarning;
-
-    // Overshoot display calculation
-    const isOvershootActive = overshootActiveObj.state === "on" || (overshootActiveObj.state !== "off" && (hvacAction === "cooling" || hvacAction === "heating"));
-    let activeOvershootOffset = null;
-    if (isOvershootActive) {
-      if (hvacAction === "cooling" && coolOvershoot.state && coolOvershoot.state !== "unavailable" && coolOvershoot.state !== "unknown") {
-        activeOvershootOffset = `-${coolOvershoot.state}°`;
-      } else if (hvacAction === "heating" && heatOvershoot.state && heatOvershoot.state !== "unavailable" && heatOvershoot.state !== "unknown") {
-        activeOvershootOffset = `+${heatOvershoot.state}°`;
-      } else if (overshootActiveObj.state === "on") {
-        activeOvershootOffset = `Active`;
-      }
-    }
-
     const unitTitle = sysConfig.name || sysConfig.title || climate.attributes?.friendly_name || title || "HVAC System";
-
-    // Preset display calculation
-    const activePresetName = (climate.attributes.preset_mode && climate.attributes.preset_mode !== "temp" && climate.attributes.preset_mode !== "none") 
-      ? climate.attributes.preset_mode 
-      : (preset && preset.state !== "unavailable" && preset.state !== "unknown" ? preset.state : null);
-
     const hasSensors = !c.hide_sensors_on_card && !sysConfig.hide_sensors_on_card && systemSensors.length > 0;
     const defaultExpanded = sysConfig.sensors_start_expanded === true || c.sensors_start_expanded === true;
     const isExpanded = (this._expandedSensorUnits && this._expandedSensorUnits[unitKey] !== undefined)
@@ -1011,26 +1579,11 @@ class PassableHvacCard extends LitElement {
         .map((s) => (typeof s.temp === "number" ? s.temp : parseFloat(s.temp)))
         .filter((t) => !isNaN(t));
       if (validTemps.length > 0) {
-        const minTemp = Math.min(...validTemps).toFixed(1).replace(/\.0$/, "");
-        const maxTemp = Math.max(...validTemps).toFixed(1).replace(/\.0$/, "");
-        tempRangeStr = (minTemp === maxTemp) ? `${minTemp}°` : `${minTemp}° – ${maxTemp}°`;
+        const minTemp = Math.min(...validTemps).toFixed(1);
+        const maxTemp = Math.max(...validTemps).toFixed(1);
+        tempRangeStr = (minTemp === maxTemp) ? `${minTemp}°` : `${minTemp}°–${maxTemp}°`;
       }
     }
-
-    const hasHumidity = humidity !== "--" && humidity !== null && humidity !== "";
-    const hasBadgesRow = Boolean(
-      hasHumidity ||
-      timeToTargetStr ||
-      activeOvershootOffset ||
-      isFanCircActive ||
-      isCoasting ||
-      openWindowsCount > 0 ||
-      isWindowDebouncing ||
-      preConditionNeeded ||
-      hasNextCycle ||
-      isFilterAlert ||
-      isHealthAlert
-    );
 
     return html`
       <div
@@ -1039,7 +1592,6 @@ class PassableHvacCard extends LitElement {
         @click=${() => this._showHvacModal(unitKey, "setpoints")}
         title="Tap to open controls & analytics for ${unitTitle}"
       >
-        <!-- PASSABLE HEADER ROW: Circular Icon + Title/Subtitle + Right Primary Readout -->
         <div class="hvac-zone-header">
           <div class="hvac-zone-identity">
             <div class="hvac-zone-icon-wrap ${stateClass}">
@@ -1049,26 +1601,59 @@ class PassableHvacCard extends LitElement {
               ></ha-icon>
             </div>
             <div class="hvac-zone-title-wrap">
-              <h3 class="hvac-zone-title">${unitTitle}</h3>
+              <div class="hvac-zone-title-row">
+                <h3 class="hvac-zone-title">${unitTitle}</h3>
+                ${isCoasting
+                  ? html`<span class="zone-inline-chip info" title="Post-cycle thermal coast lockout active">Coasting</span>`
+                  : ""}
+                ${winState.openCount > 0
+                  ? html`<span class="zone-inline-chip info" title="${winState.openCount} open window${winState.openCount === 1 ? '' : 's'} detected">${winState.openCount} Win Open</span>`
+                  : winState.isDebouncing
+                  ? html`<span class="zone-inline-chip neutral" title="Window sensor debouncing">Debounce</span>`
+                  : ""}
+                ${preConditionNeeded
+                  ? html`<span class="zone-inline-chip ${preConditionMode === 'cool' ? 'info' : 'warning'}" title="Pre-conditioning recommended${preConditionStart ? ' @ ' + preConditionStart : ''}">Pre-${preConditionMode === 'cool' ? 'Cool' : 'Heat'}</span>`
+                  : ""}
+                ${filterMetrics.isAlert
+                  ? html`
+                      <span
+                        class="zone-inline-chip ${filterMetrics.isExpired ? 'danger' : 'warning'} clickable"
+                        @click=${(e) => { e.stopPropagation(); this._showHvacModal(unitKey, "filter"); }}
+                        title="Air filter life ${filterMetrics.percentRemaining != null ? filterMetrics.percentRemaining + '%' : 'low'} — tap to manage"
+                      >Filter ${filterMetrics.percentRemaining != null ? `${filterMetrics.percentRemaining}%` : "Low"}</span>
+                    `
+                  : ""}
+                ${isHealthAlert
+                  ? html`
+                      <span
+                        class="zone-inline-chip warning clickable"
+                        @click=${(e) => { e.stopPropagation(); this._showMoreInfo(healthStatusId); }}
+                        title="${stallReason ? `${healthState}: ${stallReason}` : healthState}"
+                      >${healthState}</span>
+                    `
+                  : ""}
+              </div>
+
               <div class="hvac-zone-subtitle">
                 <span class="hvac-mode-inline ${stateClass}">
                   <ha-icon icon="${stateIcon}" class="${stateClass === 'active-fan' ? 'hvac-spin-icon' : ''}"></ha-icon>
-                  <span>${stateLabel}</span>
+                  <span>${stateLabel}${timeToTargetStr ? ` ${timeToTargetStr}` : ""}</span>
                 </span>
-                ${activePresetName
+                ${isFanCircActive
+                  ? html`<ha-icon icon="mdi:fan" class="hvac-spin-icon inline-fan-icon" title="Fan Recirculation Active"></ha-icon>`
+                  : ""}
+                ${hasSensors && tempRangeStr
                   ? html`
                       <span class="hvac-subtitle-dot">•</span>
-                      <span
-                        class="hvac-preset-inline"
-                        @click=${(e) => { e.stopPropagation(); this._showHvacModal(unitKey, "setpoints"); }}
-                        title="Active Preset: ${activePresetName}"
+                      <button
+                        type="button"
+                        class="hvac-inline-range-btn ${isExpanded ? 'open' : ''}"
+                        @click=${(e) => this._toggleSensorTray(e, unitKey)}
+                        title="Tap to ${isExpanded ? 'hide' : 'view'} ${systemSensors.length} room sensors"
                       >
-                        <ha-icon
-                          icon="${this._getPresetIcon(activePresetName)}"
-                          style="color:${this._getPresetColor(activePresetName)};"
-                        ></ha-icon>
-                        <span>${activePresetName}</span>
-                      </span>
+                        <span>${tempRangeStr}</span>
+                        <ha-icon icon="${isExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}"></ha-icon>
+                      </button>
                     `
                   : ""}
               </div>
@@ -1078,157 +1663,32 @@ class PassableHvacCard extends LitElement {
           <div class="hvac-zone-primary">
             <div class="hvac-zone-current-temp">${currentTemp}°</div>
             <div class="hvac-zone-target-row">
-              <span class="hvac-target-val">Set ${targetTemp}°</span>
+              <span class="hvac-target-val">Set ${targetDisplay}°</span>
               <span class="hvac-target-sep">•</span>
-              <span class="hvac-humidity-inline">${humidity}% RH</span>
+              <span class="hvac-humidity-inline">${humidity}%</span>
             </div>
           </div>
         </div>
 
-        <!-- DYNAMIC OPERATIONAL TELEMETRY & ALERT PILLS -->
-        ${hasBadgesRow
+        ${hasSensors && isExpanded
           ? html`
-              <div class="hvac-zone-badges-row">
-                ${hasHumidity
-                  ? html`
-                      <div class="passable-badge badge-humidity" title="Indoor Humidity: ${humidity}% RH">
-                        <ha-icon icon="mdi:water-percent"></ha-icon>
-                        <span>${humidity}% RH</span>
+              <div class="hvac-sensor-tray-grid" @click=${(e) => e.stopPropagation()}>
+                ${systemSensors.map(
+                  (s) => html`
+                    <div
+                      class="hvac-room-mini-card ${s.isActive ? 'active' : ''}"
+                      @click=${(e) => { e.stopPropagation(); this._showMoreInfo(s.entityId); }}
+                      title="${s.name}: ${s.temp}${s.unit}${s.passiveRate ? ` (${s.passiveRate})` : ''} ${s.isLimiting ? '[Sleep Limiting Room]' : (s.isActive ? '(Active in comfort profile)' : '(Standby)')}"
+                    >
+                      <div class="room-mini-top">
+                        <span class="room-mini-dot ${s.isActive ? 'active' : 'standby'}" style="${s.isLimiting ? 'background:#f59e0b;' : ''}"></span>
+                        <span class="room-mini-name">${s.cleanName}</span>
                       </div>
-                    `
-                  : ""}
-                ${timeToTargetStr
-                  ? html`
-                      <div class="passable-badge ${hvacAction === 'cooling' ? 'info' : 'warning'}" title="Estimated time to reach ${targetTemp}°">
-                        <ha-icon icon="mdi:clock-fast"></ha-icon>
-                        <span>${timeToTargetStr} to ${targetTemp}°</span>
-                      </div>
-                    `
-                  : ""}
-                ${activeOvershootOffset
-                  ? html`
-                      <div class="passable-badge ${hvacAction === 'cooling' ? 'info' : 'warning'}" title="Active Overshoot Offset">
-                        <ha-icon icon="mdi:delta"></ha-icon>
-                        <span>Overshoot ${activeOvershootOffset}</span>
-                      </div>
-                    `
-                  : ""}
-                ${isCoasting
-                  ? html`
-                      <div class="passable-badge info" title="Post-compressor thermal coast window active">
-                        <ha-icon icon="mdi:sine-wave"></ha-icon>
-                        <span>Coasting</span>
-                      </div>
-                    `
-                  : ""}
-                ${openWindowsCount > 0
-                  ? html`
-                      <div class="passable-badge info" title="${openWindowsCount} open window${openWindowsCount === 1 ? '' : 's'} detected in zone">
-                        <ha-icon icon="mdi:window-open-variant"></ha-icon>
-                        <span>${openWindowsCount} ${openWindowsCount === 1 ? 'Window' : 'Windows'} Open</span>
-                      </div>
-                    `
-                  : isWindowDebouncing
-                  ? html`
-                      <div class="passable-badge badge-neutral" title="${pendingDebounceCount} window sensor${pendingDebounceCount === 1 ? '' : 's'} debouncing before HVAC pause">
-                        <ha-icon icon="mdi:timer-sand"></ha-icon>
-                        <span>Window Debouncing</span>
-                      </div>
-                    `
-                  : ""}
-                ${preConditionNeeded
-                  ? html`
-                      <div class="passable-badge ${preConditionMode === 'cool' ? 'info' : 'warning'}" title="Action recommended: start ${preConditionMode === 'cool' ? 'cooling' : 'heating'} / close windows${preConditionStart ? ' around ' + preConditionStart : ''} to recover before comfort threshold breach">
-                        <ha-icon icon="mdi:clock-alert-outline"></ha-icon>
-                        <span>Pre-${preConditionMode === 'cool' ? 'Cool' : 'Heat'}${preConditionStart ? ` @ ${preConditionStart}` : ''}</span>
-                      </div>
-                    `
-                  : hasNextCycle
-                  ? html`
-                      <div
-                        class="passable-badge badge-neutral"
-                        title="Thermostat is set to ${nextCycleMode === 'cool' ? 'Cool' : 'Heat'} — expected to automatically kick on around ${nextCycleTime}${nextTriggerTemp !== null ? ` (at ${nextTriggerTemp}°F)` : ''}. No action needed."
-                      >
-                        <ha-icon icon="mdi:clock-outline"></ha-icon>
-                        <span>Next ${nextCycleMode === 'cool' ? 'Cool' : 'Heat'} ~${nextCycleTime}</span>
-                      </div>
-                    `
-                  : ""}
-                ${isFanCircActive
-                  ? html`
-                      <div class="passable-badge success" title="Convective Fan Recirculation Active">
-                        <ha-icon icon="mdi:fan" class="hvac-spin-icon"></ha-icon>
-                        <span>Recirculating</span>
-                      </div>
-                    `
-                  : ""}
-                ${isFilterAlert
-                  ? html`
-                      <div
-                        class="passable-badge ${isFilterExpired ? 'danger' : 'warning'} clickable"
-                        @click=${(e) => { e.stopPropagation(); this._showHvacModal(unitKey, "filter"); }}
-                        title="${isFilterExpired ? 'Air filter life expired! Tap for maintenance.' : 'Air filter life low! Tap for maintenance.'}"
-                      >
-                        <ha-icon icon="mdi:air-filter"></ha-icon>
-                        <span>${isFilterExpired ? 'Replace Filter' : 'Filter Low'}</span>
-                      </div>
-                    `
-                  : ""}
-                ${isHealthAlert
-                  ? html`
-                      <div
-                        class="passable-badge warning clickable"
-                        @click=${(e) => { e.stopPropagation(); this._showMoreInfo(healthStatusId); }}
-                        title="${stallReason ? `${healthState}: ${stallReason}` : `HVAC Mechanical Diagnostic Alert: ${healthState}`}"
-                      >
-                        <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
-                        <span>${healthState}</span>
-                      </div>
-                    `
-                  : ""}
-              </div>
-            `
-          : ""}
-
-        <!-- FULL-WIDTH REMOTE ROOM SENSORS EXPAND BAR (MATCHING PASSABLE DESIGN SYSTEM) -->
-        ${hasSensors
-          ? html`
-              <div
-                class="hvac-sensor-expand-bar ${isExpanded ? 'open' : ''}"
-                @click=${(e) => this._toggleSensorTray(e, unitKey)}
-                title="Tap to toggle ${systemSensors.length} remote room sensors"
-              >
-                <div class="sensor-bar-left">
-                  <ha-icon icon="mdi:home-thermometer-outline" class="sensor-summary-icon"></ha-icon>
-                  <span class="sensor-summary-label">${systemSensors.length} Room ${systemSensors.length === 1 ? 'Sensor' : 'Sensors'}</span>
-                </div>
-                <div class="sensor-bar-right">
-                  ${tempRangeStr ? html`<span class="sensor-summary-range">${tempRangeStr}</span>` : ""}
-                  <ha-icon icon="${isExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}" class="sensor-summary-chevron"></ha-icon>
-                </div>
-              </div>
-
-              ${isExpanded
-                ? html`
-                    <div class="hvac-sensor-tray-grid" @click=${(e) => e.stopPropagation()}>
-                      ${systemSensors.map(
-                        (s) => html`
-                          <div
-                            class="hvac-room-mini-card ${s.isActive ? 'active' : ''}"
-                            @click=${(e) => { e.stopPropagation(); this._showMoreInfo(s.entityId); }}
-                            title="${s.name}: ${s.temp}${s.unit}${s.passiveRate ? ` (${s.passiveRate})` : ''} ${s.isLimiting ? '[Sleep Limiting Room]' : (s.isActive ? '(Active in comfort profile)' : '(Standby)')}"
-                          >
-                            <div class="room-mini-top">
-                              <span class="room-mini-dot ${s.isActive ? 'active' : 'standby'}" style="${s.isLimiting ? 'background:#f59e0b;' : ''}"></span>
-                              <span class="room-mini-name">${s.cleanName}</span>
-                            </div>
-                            <span class="room-mini-temp">${s.temp}°</span>
-                          </div>
-                        `
-                      )}
+                      <span class="room-mini-temp">${typeof s.temp === 'number' ? s.temp.toFixed(1) : s.temp}°</span>
                     </div>
                   `
-                : ""}
+                )}
+              </div>
             `
           : ""}
       </div>
@@ -1273,163 +1733,51 @@ class PassableHvacCard extends LitElement {
     `;
   }
 
-  _renderHvacModal(systems = []) {
-    if (!this._hvacModal) return html``;
+  _formatShortDate(rawVal) {
+    if (!rawVal) return "";
+    const d = new Date(rawVal);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    }
+    return String(rawVal);
+  }
 
-    const { unitKey, type } = this._hvacModal;
-    const activeTab = this._activeHvacTab || type || "setpoints";
-    const c = this.config;
-    const sysConfig = (systems || []).find((s) => s.key === unitKey) || {};
-    const unitTitle = sysConfig.name || (unitKey === "downstairs" ? "Downstairs & Basement" : "Upstairs & Attic");
-    const resolveEntity = (primaryId, fallbacks) => {
-      if (this.hass && this.hass.states[primaryId]) return primaryId;
-      for (const fb of fallbacks) {
-        if (this.hass && this.hass.states[fb]) return fb;
-      }
-      return primaryId;
-    };
+  _getProcessedHvacAnalytics({
+    unitKey,
+    cachedHistory,
+    selectedDayIdx,
+    selectedChunkIdxInput,
+    stepMinutes,
+    isHeatingSeason,
+    liveCoolToday,
+    liveHeatToday,
+    liveOutdoorTemp,
+    liveOutdoorTempStr,
+    fallbackIndoor,
+    fallbackSetpoint,
+    coolDailySensorId,
+    heatDailySensorId,
+    coolTodaySensorId,
+    heatTodaySensorId,
+    outdoorTempId,
+  }) {
+    const fetchedAt = cachedHistory?.fetchedAt || 0;
+    const memoKey = [
+      unitKey,
+      fetchedAt,
+      selectedDayIdx,
+      selectedChunkIdxInput ?? "latest",
+      stepMinutes,
+      isHeatingSeason ? 1 : 0,
+      liveCoolToday,
+      liveHeatToday,
+      liveOutdoorTempStr,
+      fallbackIndoor,
+      fallbackSetpoint,
+    ].join("|");
 
-    const climateId = resolveEntity(
-      sysConfig.climate || c[`${unitKey}_climate`],
-      [`climate.${unitKey}`, `climate.${unitKey}_hk`, `climate.${unitKey}_thermostat`, `climate.hvac_${unitKey}`]
-    );
-    const acCondensersId = c.ac_condensers_uncovered || "input_boolean.ac_condensers_uncovered";
-    const outdoorTempId = resolveEntity(
-      sysConfig.outdoor_temp || c.outdoor_temp_sensor || c.outdoor_temp,
-      ["sensor.outdoor_temperature", "weather.home", "weather.downstairs", "weather.upstairs"]
-    );
-    const fanCircId = sysConfig.fan_circulation || c[`${unitKey}_fan_circulation`] || `input_number.hvac_fan_circulation_${unitKey}`;
-    const fanCircActiveId = sysConfig.fan_circ_active || c[`${unitKey}_fan_circ_active`] || `input_boolean.hvac_fan_circulation_active_${unitKey}`;
-    const overshootActiveId = sysConfig.overshoot_active || c[`${unitKey}_overshoot_active`] || `input_boolean.hvac_overshoot_active_${unitKey}`;
-    const coolOvershootId = sysConfig.cool_overshoot || c[`${unitKey}_cool_overshoot`] || "input_number.hvac_overshoot_amount_cool";
-    const heatOvershootId = sysConfig.heat_overshoot || c[`${unitKey}_heat_overshoot`] || "input_number.hvac_overshoot_amount_heat";
-    const coolThreshId = sysConfig.cool_overshoot_thresh || c[`${unitKey}_cool_overshoot_thresh`] || "input_number.hvac_overshoot_threshold_cool";
-    const heatThreshId = sysConfig.heat_overshoot_thresh || c[`${unitKey}_heat_overshoot_thresh`] || "input_number.hvac_overshoot_threshold_heat";
-    const filterHoursId = sysConfig.filter_hours || c[`${unitKey}_filter_hours`] || `sensor.hvac_filter_life_remaining_${unitKey}`;
-    const filterLifeId = resolveEntity(
-      sysConfig.filter_life || c[`${unitKey}_filter_life`],
-      [`number.hvac_filter_life_${unitKey}`, `input_number.hvac_filter_life_${unitKey}`]
-    );
-
-    const climate = this._getEntity(climateId);
-    const acCondensersObj = this._getEntity(acCondensersId);
-    const outdoorTempObj = this._getEntity(outdoorTempId);
-    const fanCircObj = this._getEntity(fanCircId);
-    const fanCircActiveObj = this._getEntity(fanCircActiveId);
-    const overshootActiveObj = this._getEntity(overshootActiveId);
-    const heatOvershoot = this._getEntity(heatOvershootId);
-    const coolOvershoot = this._getEntity(coolOvershootId);
-    const coolThresh = this._getEntity(coolThreshId);
-    const heatThresh = this._getEntity(heatThreshId);
-    const filterHours = this._getEntity(filterHoursId);
-    const filterLife = this._getEntity(filterLifeId);
-
-    const modalSensors = this._getSystemSensors(unitKey, sysConfig, climateId);
-
-    const coolTodaySensorId = sysConfig.cool_today || c[`${unitKey}_cool_today`] || `sensor.hvac_${unitKey}_cooling_today`;
-    const heatTodaySensorId = sysConfig.heat_today || c[`${unitKey}_heat_today`] || `sensor.hvac_${unitKey}_heating_today`;
-    const coolDailySensorId = sysConfig.cool_daily || c[`${unitKey}_cool_daily`] || `sensor.hvac_${unitKey}_cooling_daily`;
-    const heatDailySensorId = sysConfig.heat_daily || c[`${unitKey}_heat_daily`] || `sensor.hvac_${unitKey}_heating_daily`;
-
-    const coolTodayObj = this._getEntity(coolTodaySensorId) || this._getEntity(`sensor.hvac_${unitKey}_cooling_runtime_today`);
-    const heatTodayObj = this._getEntity(heatTodaySensorId) || this._getEntity(`sensor.hvac_${unitKey}_heating_runtime_today`);
-
-    const liveCoolToday = (coolTodayObj && coolTodayObj.state && !isNaN(parseFloat(coolTodayObj.state)))
-      ? parseFloat(parseFloat(coolTodayObj.state).toFixed(1))
-      : 0.0;
-
-    const liveHeatToday = (heatTodayObj && heatTodayObj.state && !isNaN(parseFloat(heatTodayObj.state)))
-      ? parseFloat(parseFloat(heatTodayObj.state).toFixed(1))
-      : 0.0;
-
-    const presetModes = (climate && climate.attributes && climate.attributes.preset_modes) || ["home", "away", "sleep", "ECO", "Alt Sleep"];
-    const presetEntityId = sysConfig.setpoint_preset || c[`${unitKey}_setpoint_preset`] || "input_text.hvac_active_profile";
-    const presetEntityObj = this._getEntity(presetEntityId);
-    const currentPreset = (climate && climate.attributes && climate.attributes.preset_mode && climate.attributes.preset_mode !== "temp" && climate.attributes.preset_mode !== "none")
-      ? climate.attributes.preset_mode
-      : ((presetEntityObj && presetEntityObj.state && presetEntityObj.state !== "unavailable" && presetEntityObj.state !== "unknown") ? presetEntityObj.state : "home");
-    const isUpstairs = unitKey === "upstairs";
-
-    const timeToTempId = sysConfig.time_to_temp || c[`${unitKey}_time_to_temp`] || `sensor.hvac_time_to_temp_${unitKey}`;
-    const timeToTempObj = this._getEntity(timeToTempId);
-    const healthStatusId = sysConfig.health_status || c[`${unitKey}_health_status`] || `sensor.hvac_health_status_${unitKey}`;
-    const healthStatusObj = this.hass?.states?.[healthStatusId] || null;
-    const modalHealthState = (healthStatusObj && healthStatusObj.state && healthStatusObj.state !== "unavailable" && healthStatusObj.state !== "unknown")
-      ? String(healthStatusObj.state)
-      : "Optimal";
-    const modalIsHealthAlert = modalHealthState !== "Optimal" && modalHealthState !== "Healthy";
-    const modalStallReason = (healthStatusObj && healthStatusObj.attributes && healthStatusObj.attributes.stall_reason)
-      ? String(healthStatusObj.attributes.stall_reason)
-      : "";
-
-    const isModalHeat = climate && (climate.state === "heat" || (climate.attributes && climate.attributes.hvac_action === "heating"));
-    const learnedSwing = timeToTempObj?.attributes?.learned_deadband_swing_f
-      ?? (isModalHeat ? timeToTempObj?.attributes?.learned_swing_heat_f : timeToTempObj?.attributes?.learned_swing_cool_f)
-      ?? timeToTempObj?.attributes?.learned_swing_heat_f;
-    const learnedCoastMag = timeToTempObj?.attributes?.learned_coast_magnitude_f
-      ?? timeToTempObj?.attributes?.learned_coast_f;
-    const learnedCoastDur = timeToTempObj?.attributes?.learned_coast_duration_mins
-      ?? timeToTempObj?.attributes?.learned_coast_minutes;
-    const hasLearnedSwingCoast = learnedSwing !== undefined && learnedSwing !== null && !isNaN(parseFloat(learnedSwing));
-    const modalNextCycleMode = (!timeToTempObj?.attributes?.pre_condition_needed && timeToTempObj?.attributes?.next_hvac_cycle_mode)
-      ? String(timeToTempObj.attributes.next_hvac_cycle_mode)
-      : "";
-    const modalNextCycleTime = (!timeToTempObj?.attributes?.pre_condition_needed && timeToTempObj?.attributes?.next_hvac_cycle_time)
-      ? String(timeToTempObj.attributes.next_hvac_cycle_time)
-      : "";
-
-    const advisorRecObj = this.hass?.states?.["sensor.passable_climate_window_recommendation"] || null;
-    const sleepOffsetF = (isUpstairs && advisorRecObj && advisorRecObj.attributes && advisorRecObj.attributes.recommended_sleep_offset_f)
-      ? parseFloat(advisorRecObj.attributes.recommended_sleep_offset_f)
-      : 0;
-    const sleepOffsetReason = (isUpstairs && advisorRecObj && advisorRecObj.attributes && advisorRecObj.attributes.sleep_offset_reason)
-      ? String(advisorRecObj.attributes.sleep_offset_reason)
-      : "";
-    const sleepLimitingRoom = (isUpstairs && advisorRecObj && advisorRecObj.attributes && advisorRecObj.attributes.sleep_limiting_room)
-      ? String(advisorRecObj.attributes.sleep_limiting_room)
-      : "";
-
-    const zoneRateObj = this.hass?.states?.[`sensor.${unitKey}_fault_tolerant_temp_rate`] || null;
-    const profileClosedObj = this.hass?.states?.[`sensor.plot_data_${unitKey}_temp_profile_win_closed`] || null;
-    const activeModelSource = profileClosedObj?.attributes?.active_model_source || null;
-    const complianceSummary = advisorRecObj?.attributes?.compliance_summary || null;
-    const hasSmartClimateAdvisor = Boolean(advisorRecObj || zoneRateObj || profileClosedObj || hasLearnedSwingCoast);
-
-    const modalHvacAction = (climate && climate.attributes && climate.attributes.hvac_action) || (climate && climate.state) || "idle";
-    const modalCurrentTemp = (climate && climate.attributes && climate.attributes.current_temperature !== undefined) ? climate.attributes.current_temperature : "--";
-    const modalHumidity = (climate && climate.attributes && climate.attributes.current_humidity !== undefined) ? climate.attributes.current_humidity : "--";
-    const modalTempStep = this._getHvacTempStep(climate);
-    const modalTargetRaw = parseFloat(climate?.attributes?.temperature);
-    const modalTargetTemp = !isNaN(modalTargetRaw)
-      ? (modalTempStep < 1 ? Math.round(modalTargetRaw * 10) / 10 : Math.round(modalTargetRaw))
-      : 70;
-    const modalTimeMins = (timeToTempObj && timeToTempObj.state && !isNaN(parseFloat(timeToTempObj.state))) ? Math.round(parseFloat(timeToTempObj.state)) : 0;
-    const modalTimeStr = ((modalHvacAction === "cooling" || modalHvacAction === "heating") && modalTimeMins > 0) ? `~${modalTimeMins}m` : "";
-    const modalOvershootOn = overshootActiveObj && overshootActiveObj.state === "on";
-    const isPresetsExpanded = Boolean(this._expandedModalSections && this._expandedModalSections[`presets_${unitKey}`]);
-    const isOvershootExpanded = Boolean(this._expandedModalSections && this._expandedModalSections[`overshoot_${unitKey}`]);
-
-    const isHeatingSeason = climate && (climate.state === "heat" || (climate.attributes && climate.attributes.hvac_action === "heating"));
-    const selectedDayIdx = (this._selectedHvacDayIndex !== undefined && this._selectedHvacDayIndex !== null) ? this._selectedHvacDayIndex : 9;
-    const graphMode = this._hvacGraphMode || "multiday";
-
-    const getOutdoorTempNum = (obj) => {
-      if (!obj) return null;
-      if (obj.attributes && obj.attributes.temperature !== undefined && obj.attributes.temperature !== null && !isNaN(parseFloat(obj.attributes.temperature))) {
-        return parseFloat(obj.attributes.temperature);
-      }
-      if (obj.state && !isNaN(parseFloat(obj.state))) {
-        return parseFloat(obj.state);
-      }
-      return null;
-    };
-    const liveOutdoorTemp = getOutdoorTempNum(outdoorTempObj);
-    const liveOutdoorTempStr = liveOutdoorTemp !== null ? liveOutdoorTemp.toFixed(1) : "--";
-
-    // Trigger History REST API / WS fetch if missing or stale (>30s)
-    const cachedHistory = (this._hvacHistoryCache && this._hvacHistoryCache[unitKey]) ? this._hvacHistoryCache[unitKey] : null;
-    if (!cachedHistory || Date.now() - cachedHistory.fetchedAt > 30000) {
-      this._fetchHvacHistoryData(unitKey, climateId, outdoorTempId, coolDailySensorId, heatDailySensorId, coolTodaySensorId, heatTodaySensorId);
+    if (this._analyticsMemo && this._analyticsMemo[unitKey]?.key === memoKey) {
+      return this._analyticsMemo[unitKey].value;
     }
 
     const outdoorTimeline = cachedHistory ? cachedHistory.outdoorHistory : [];
@@ -1438,12 +1786,10 @@ class PassableHvacCard extends LitElement {
     const outdoorHistory10d = cachedHistory ? (cachedHistory.outdoorHistory10d || []) : [];
     const climateHistory10d = cachedHistory ? (cachedHistory.climateHistory10d || []) : [];
 
-    // Helper: Normalize state item from HA WebSocket or REST API
     const normalizeState = (item) => {
       if (!item) return null;
       const state = item.state !== undefined ? item.state : item.s;
       const attributes = item.attributes !== undefined ? item.attributes : (item.a || {});
-      
       let timeMs = 0;
       if (item.last_updated !== undefined) {
         timeMs = typeof item.last_updated === "number" ? (item.last_updated > 1e11 ? item.last_updated : item.last_updated * 1000) : new Date(item.last_updated).getTime();
@@ -1454,16 +1800,14 @@ class PassableHvacCard extends LitElement {
       } else if (item.lc !== undefined) {
         timeMs = typeof item.lc === "number" ? (item.lc > 1e11 ? item.lc : item.lc * 1000) : new Date(item.lc).getTime();
       }
-
       return { state, attributes, timeMs };
     };
 
-    // Calculate actual average outdoor temperature today from outdoorTimeline if available
     let calculatedTodayAvgOutdoor = null;
     if (outdoorTimeline && outdoorTimeline.length > 0) {
       const validTemps = outdoorTimeline
-        .map(s => {
-          if (s.attributes && s.attributes.temperature !== undefined && s.attributes.temperature !== null && !isNaN(parseFloat(s.attributes.temperature))) {
+        .map((s) => {
+          if (s.attributes?.temperature !== undefined && s.attributes.temperature !== null && !isNaN(parseFloat(s.attributes.temperature))) {
             return parseFloat(s.attributes.temperature);
           }
           if (s.state && !isNaN(parseFloat(s.state))) {
@@ -1471,18 +1815,15 @@ class PassableHvacCard extends LitElement {
           }
           return null;
         })
-        .filter(v => v !== null && !isNaN(v));
+        .filter((v) => v !== null && !isNaN(v));
       if (validTemps.length > 0) {
-        const sum = validTemps.reduce((acc, v) => acc + v, 0);
-        calculatedTodayAvgOutdoor = (sum / validTemps.length).toFixed(1);
+        calculatedTodayAvgOutdoor = (validTemps.reduce((acc, v) => acc + v, 0) / validTemps.length).toFixed(1);
       }
     }
-
     const todayOutdoorAvgStr = calculatedTodayAvgOutdoor || liveOutdoorTempStr;
 
-    // Helper: Local date key YYYY-MM-DD
     const getLocalDateKey = (ts) => {
-      const d = (ts instanceof Date) ? ts : new Date(ts);
+      const d = ts instanceof Date ? ts : new Date(ts);
       if (isNaN(d.getTime())) return "";
       const year = d.getFullYear();
       const month = String(d.getMonth() + 1).padStart(2, "0");
@@ -1490,7 +1831,6 @@ class PassableHvacCard extends LitElement {
       return `${year}-${month}-${day}`;
     };
 
-    // Index daily statistics arrays by local date key
     const indexStatsByDate = (statArray) => {
       const map = {};
       if (!Array.isArray(statArray)) return map;
@@ -1508,14 +1848,13 @@ class PassableHvacCard extends LitElement {
     const heatTodayMap = indexStatsByDate(statisticsData[heatTodaySensorId]);
     const outdoorStatsMap = indexStatsByDate(statisticsData[outdoorTempId]);
 
-    // Group 10-day outdoor history samples by local date key for average calculation
     const outdoorHistoryByDate = {};
     (outdoorHistory10d || []).forEach((item) => {
       const norm = normalizeState(item);
       if (!norm || norm.timeMs === 0) return;
       const key = getLocalDateKey(norm.timeMs);
       let temp = null;
-      if (norm.attributes && norm.attributes.temperature !== undefined && !isNaN(parseFloat(norm.attributes.temperature))) {
+      if (norm.attributes?.temperature !== undefined && !isNaN(parseFloat(norm.attributes.temperature))) {
         temp = parseFloat(norm.attributes.temperature);
       } else if (norm.state !== undefined && !isNaN(parseFloat(norm.state))) {
         temp = parseFloat(norm.state);
@@ -1526,7 +1865,6 @@ class PassableHvacCard extends LitElement {
       }
     });
 
-    // If climateHistory10d fallback is used, calculate daily run durations in hours
     const climateDailyDurations = {};
     if (climateHistory10d && climateHistory10d.length > 0) {
       for (let idx = 0; idx < climateHistory10d.length; idx++) {
@@ -1546,18 +1884,15 @@ class PassableHvacCard extends LitElement {
       }
     }
 
-    // Compute 10 consecutive daily records ending on Today (0 to 9 days ago)
     const now = new Date();
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const historyDataRaw = Array.from({ length: 10 }, (_, i) => {
       const daysAgo = 9 - i;
       const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, 12, 0, 0);
       const dateKey = getLocalDateKey(targetDate);
-
-      const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
       const dayNum = String(targetDate.getDate()).padStart(2, "0");
       const monthStr = monthNames[targetDate.getMonth()];
       const dayLabel = daysAgo === 0 ? "Today" : `${dayNum} ${monthStr}`;
-
       const cx = 45 + i * 28;
       let cool = 0.0;
       let heat = 0.0;
@@ -1599,59 +1934,36 @@ class PassableHvacCard extends LitElement {
           avgTemp = parseFloat(outStat.mean).toFixed(1);
         } else if (outdoorHistoryByDate[dateKey] && outdoorHistoryByDate[dateKey].length > 0) {
           const temps = outdoorHistoryByDate[dateKey];
-          const sum = temps.reduce((a, b) => a + b, 0);
-          avgTemp = (sum / temps.length).toFixed(1);
+          avgTemp = (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1);
         } else {
           avgTemp = todayOutdoorAvgStr;
         }
       }
 
-      cool = parseFloat((cool || 0).toFixed(1));
-      heat = parseFloat((heat || 0).toFixed(1));
-
-      return { dayLabel, cool, heat, avgTemp, cx };
+      return {
+        dayLabel,
+        cool: parseFloat((cool || 0).toFixed(1)),
+        heat: parseFloat((heat || 0).toFixed(1)),
+        avgTemp,
+        cx,
+      };
     });
 
-    // DYNAMIC RUNTIME Y-AXIS SCALE CALCULATION
-    const allRuntimes = historyDataRaw.map(d => isHeatingSeason ? parseFloat(d.heat) : parseFloat(d.cool));
+    const allRuntimes = historyDataRaw.map((d) => (isHeatingSeason ? parseFloat(d.heat) : parseFloat(d.cool)));
     const maxRecordedRuntime = Math.max(0, ...allRuntimes);
-
     let maxGridHours = 2.0;
-    if (maxRecordedRuntime > 9.5) {
-      maxGridHours = Math.ceil(maxRecordedRuntime * 1.15 / 4) * 4;
-    } else if (maxRecordedRuntime > 7.5) {
-      maxGridHours = 10.0;
-    } else if (maxRecordedRuntime > 5.5) {
-      maxGridHours = 8.0;
-    } else if (maxRecordedRuntime > 3.5) {
-      maxGridHours = 6.0;
-    } else if (maxRecordedRuntime > 1.8) {
-      maxGridHours = 4.0;
-    } else if (maxRecordedRuntime > 0.8) {
-      maxGridHours = 2.0;
-    } else {
-      maxGridHours = 2.0;
-    }
+    if (maxRecordedRuntime > 9.5) maxGridHours = Math.ceil((maxRecordedRuntime * 1.15) / 4) * 4;
+    else if (maxRecordedRuntime > 7.5) maxGridHours = 10.0;
+    else if (maxRecordedRuntime > 5.5) maxGridHours = 8.0;
+    else if (maxRecordedRuntime > 3.5) maxGridHours = 6.0;
+    else if (maxRecordedRuntime > 1.8) maxGridHours = 4.0;
 
     const maxTopStr = maxGridHours.toFixed(maxGridHours >= 10 ? 0 : 1);
     const runtimeYLabels = isHeatingSeason
-      ? {
-          top: "0.0",
-          midHigh: (maxGridHours * 0.25).toFixed(1),
-          mid: (maxGridHours * 0.50).toFixed(1),
-          midLow: (maxGridHours * 0.75).toFixed(1),
-          bottom: maxTopStr
-        }
-      : {
-          top: maxTopStr,
-          midHigh: (maxGridHours * 0.75).toFixed(1),
-          mid: (maxGridHours * 0.50).toFixed(1),
-          midLow: (maxGridHours * 0.25).toFixed(1),
-          bottom: "0.0"
-        };
+      ? { top: "0.0", midHigh: (maxGridHours * 0.25).toFixed(1), mid: (maxGridHours * 0.5).toFixed(1), midLow: (maxGridHours * 0.75).toFixed(1), bottom: maxTopStr }
+      : { top: maxTopStr, midHigh: (maxGridHours * 0.75).toFixed(1), mid: (maxGridHours * 0.5).toFixed(1), midLow: (maxGridHours * 0.25).toFixed(1), bottom: "0.0" };
 
-    // Dynamic Y-Axis scale calculation for 10-day outdoor temperature curve
-    const barTemps = historyDataRaw.map(d => parseFloat(d.avgTemp)).filter(t => !isNaN(t));
+    const barTemps = historyDataRaw.map((d) => parseFloat(d.avgTemp)).filter((t) => !isNaN(t));
     const minBarTemp = barTemps.length > 0 ? Math.floor(Math.min(...barTemps) - 2) : 60;
     const maxBarTemp = barTemps.length > 0 ? Math.ceil(Math.max(...barTemps) + 2) : 90;
     const barTempSpan = Math.max(1, maxBarTemp - minBarTemp);
@@ -1661,22 +1973,16 @@ class PassableHvacCard extends LitElement {
       return 160 - ((v - minBarTemp) / barTempSpan) * 140;
     };
 
-    const historyData = historyDataRaw.map(d => ({
-      ...d,
-      cy: calcBarY(d.avgTemp)
-    }));
-
+    const historyData = historyDataRaw.map((d) => ({ ...d, cy: calcBarY(d.avgTemp) }));
     const activeDay = historyData[selectedDayIdx] || historyData[9];
-
     const barYGridLabels = {
       top: `${maxBarTemp}`,
       midHigh: `${Math.round(minBarTemp + barTempSpan * 0.75)}`,
-      mid: `${Math.round(minBarTemp + barTempSpan * 0.50)}`,
+      mid: `${Math.round(minBarTemp + barTempSpan * 0.5)}`,
       midLow: `${Math.round(minBarTemp + barTempSpan * 0.25)}`,
-      bottom: `${minBarTemp}`
+      bottom: `${minBarTemp}`,
     };
 
-    // Smooth SVG path builder function
     const buildSmoothPath = (pts) => {
       if (!pts || pts.length === 0) return "";
       if (pts.length === 1) return `M ${pts[0].cx} ${pts[0].cy}`;
@@ -1686,12 +1992,10 @@ class PassableHvacCard extends LitElement {
         const p1 = pts[i];
         const p2 = pts[i + 1];
         const p3 = pts[Math.min(pts.length - 1, i + 2)];
-
         const cp1x = p1.cx + (p2.cx - p0.cx) / 6;
         const cp1y = p1.cy + (p2.cy - p0.cy) / 6;
         const cp2x = p2.cx - (p3.cx - p1.cx) / 6;
         const cp2y = p2.cy - (p3.cy - p1.cy) / 6;
-
         d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.cx.toFixed(1)} ${p2.cy.toFixed(1)}`;
       }
       return d;
@@ -1699,16 +2003,12 @@ class PassableHvacCard extends LitElement {
     const multiDayPathString = buildSmoothPath(historyData);
 
     const endTimeMs = cachedHistory ? cachedHistory.endTime : Date.now();
-    const startTimeMs = cachedHistory ? cachedHistory.startTime : (endTimeMs - 24 * 3600 * 1000);
-
-    const stepMinutes = parseInt(this._hvacTimelineRes || 15, 10);
+    const startTimeMs = cachedHistory ? cachedHistory.startTime : endTimeMs - 24 * 3600 * 1000;
     const totalChunks = Math.max(1, Math.floor((24 * 60) / stepMinutes));
+    const selectedChunkIdx = selectedChunkIdxInput !== undefined && selectedChunkIdxInput !== null
+      ? Math.min(totalChunks - 1, selectedChunkIdxInput)
+      : totalChunks - 1;
 
-    const selectedChunkIdx = (this._selectedHvacChunkIndex !== undefined && this._selectedHvacChunkIndex !== null)
-      ? Math.min(totalChunks - 1, this._selectedHvacChunkIndex)
-      : (totalChunks - 1); // Default to current moment (Now)
-
-    // Helper: Find active state in history stream for a given timestamp
     const getStateAt = (timeline, targetMs) => {
       if (!timeline || timeline.length === 0) return null;
       let active = null;
@@ -1723,24 +2023,16 @@ class PassableHvacCard extends LitElement {
       return active || normalizeState(timeline[0]);
     };
 
-    // Current live fallbacks if historical sample is missing
-    const fallbackIndoor = (climate && climate.attributes && climate.attributes.current_temperature) ? climate.attributes.current_temperature : 72;
-    const fallbackSetpoint = (climate && climate.attributes && (climate.attributes.temperature || climate.attributes.target_temp_low || climate.attributes.target_temp_high)) ? (climate.attributes.temperature || climate.attributes.target_temp_low || climate.attributes.target_temp_high) : 72;
-
-    let fallbackOutdoor = liveOutdoorTemp !== null ? liveOutdoorTemp : 72;
-
-    // Generate timelineData points directly from Home Assistant Recorder History API
+    const fallbackOutdoor = liveOutdoorTemp !== null ? liveOutdoorTemp : 72;
     const rawTimelineData = Array.from({ length: totalChunks }, (_, idx) => {
       const cx = 30 + (idx / Math.max(1, totalChunks - 1)) * 280;
       const pointTimeMs = startTimeMs + (idx / Math.max(1, totalChunks - 1)) * (24 * 3600 * 1000);
       const pointDate = new Date(pointTimeMs);
-
       const hours = pointDate.getHours();
       const mins = pointDate.getMinutes();
       const displayHour = hours % 12 === 0 ? 12 : hours % 12;
       const ampm = hours < 12 ? "AM" : "PM";
-      const minStr = String(mins).padStart(2, "0");
-      const timeLabel = `${displayHour}:${minStr} ${ampm}`;
+      const timeLabel = `${displayHour}:${String(mins).padStart(2, "0")} ${ampm}`;
 
       let indoorTemp = fallbackIndoor;
       let setpoint = fallbackSetpoint;
@@ -1763,19 +2055,12 @@ class PassableHvacCard extends LitElement {
           }
           const act = (attrs.hvac_action || "").toLowerCase();
           const st = (cState.state || "").toLowerCase();
-
-          if (act === "cooling" || act === "heating") {
-            isActive = true;
-          } else if (act === "idle" || act === "off") {
-            isActive = false;
-          } else {
-            if (st === "cool" || st === "cooling") {
-              isActive = parseFloat(indoorTemp) > (parseFloat(setpoint) + 0.1);
-            } else if (st === "heat" || st === "heating") {
-              isActive = parseFloat(indoorTemp) < (parseFloat(setpoint) - 0.1);
-            } else if (st === "auto" || st === "heat_cool") {
-              isActive = parseFloat(indoorTemp) > (parseFloat(setpoint) + 0.1) || parseFloat(indoorTemp) < (parseFloat(setpoint) - 0.1);
-            }
+          if (act === "cooling" || act === "heating") isActive = true;
+          else if (act === "idle" || act === "off") isActive = false;
+          else if (st === "cool" || st === "cooling") isActive = parseFloat(indoorTemp) > parseFloat(setpoint) + 0.1;
+          else if (st === "heat" || st === "heating") isActive = parseFloat(indoorTemp) < parseFloat(setpoint) - 0.1;
+          else if (st === "auto" || st === "heat_cool") {
+            isActive = parseFloat(indoorTemp) > parseFloat(setpoint) + 0.1 || parseFloat(indoorTemp) < parseFloat(setpoint) - 0.1;
           }
         }
       }
@@ -1792,102 +2077,76 @@ class PassableHvacCard extends LitElement {
         }
       }
 
-      return { idx, pointTimeMs, timeLabel, indoorTemp: parseFloat(indoorTemp).toFixed(1), setpoint: parseFloat(setpoint).toFixed(1), outdoorTemp: parseFloat(outdoorTemp).toFixed(1), isActive, cx };
+      return {
+        idx,
+        pointTimeMs,
+        timeLabel,
+        indoorTemp: parseFloat(indoorTemp).toFixed(1),
+        setpoint: parseFloat(setpoint).toFixed(1),
+        outdoorTemp: parseFloat(outdoorTemp).toFixed(1),
+        isActive,
+        cx,
+      };
     });
 
-    // DYNAMIC AUTOFIT Y-AXIS BOUNDS CALCULATION
-    const allTemps = rawTimelineData.flatMap(pt => [parseFloat(pt.indoorTemp), parseFloat(pt.setpoint), parseFloat(pt.outdoorTemp)]);
-    const rawMinTemp = Math.min(...allTemps);
-    const rawMaxTemp = Math.max(...allTemps);
-
-    // Autofit min/max grid temperatures with 2°F padding
-    const minGridTemp = Math.floor(rawMinTemp - 2);
-    const maxGridTemp = Math.ceil(rawMaxTemp + 2);
+    const allTemps = rawTimelineData.flatMap((pt) => [parseFloat(pt.indoorTemp), parseFloat(pt.setpoint), parseFloat(pt.outdoorTemp)]);
+    const minGridTemp = Math.floor(Math.min(...allTemps) - 2);
+    const maxGridTemp = Math.ceil(Math.max(...allTemps) + 2);
     const tempSpan = Math.max(1, maxGridTemp - minGridTemp);
-
     const calcTimelineY = (tempVal) => {
       const v = Math.max(minGridTemp, Math.min(maxGridTemp, parseFloat(tempVal) || minGridTemp));
       return 140 - ((v - minGridTemp) / tempSpan) * 120;
     };
 
-    // Apply calculated Y-coordinates to timelineData
-    const timelineData = rawTimelineData.map(pt => ({
+    const timelineData = rawTimelineData.map((pt) => ({
       ...pt,
       indoorY: calcTimelineY(pt.indoorTemp),
       setpointY: calcTimelineY(pt.setpoint),
-      outdoorY: calcTimelineY(pt.outdoorTemp)
+      outdoorY: calcTimelineY(pt.outdoorTemp),
     }));
 
     const activeHourData = timelineData[selectedChunkIdx] || timelineData[timelineData.length - 1];
-
-    // Calculate contiguous active compressor run duration for selected chunk
     let activeRunRangeStr = "";
-    if (activeHourData && activeHourData.isActive && timelineData && timelineData.length > 0) {
+    if (activeHourData && activeHourData.isActive && timelineData.length > 0) {
       let startIdx = selectedChunkIdx;
-      while (startIdx > 0 && timelineData[startIdx - 1] && timelineData[startIdx - 1].isActive) {
-        startIdx--;
-      }
+      while (startIdx > 0 && timelineData[startIdx - 1]?.isActive) startIdx--;
       let endIdx = selectedChunkIdx;
-      while (endIdx < timelineData.length - 1 && timelineData[endIdx + 1] && timelineData[endIdx + 1].isActive) {
-        endIdx++;
-      }
-      const startPt = timelineData[startIdx];
-      const endPt = timelineData[endIdx];
-      const count = (endIdx - startIdx + 1);
-      const durMins = count * stepMinutes;
-
+      while (endIdx < timelineData.length - 1 && timelineData[endIdx + 1]?.isActive) endIdx++;
+      const durMins = (endIdx - startIdx + 1) * stepMinutes;
       const formatTimeShort = (labelStr) => {
         if (!labelStr) return "";
-        const match = labelStr.match(/(\d+:\d+\s*(?:AM|PM))/i);
-        return match ? match[1] : labelStr;
+        const m = labelStr.match(/(\d+:\d+\s*(?:AM|PM))/i);
+        return m ? m[1] : labelStr;
       };
-
-      let durStr = `${durMins}m`;
-      if (durMins >= 60) {
-        const hrs = Math.floor(durMins / 60);
-        const mins = durMins % 60;
-        durStr = mins > 0 ? `${hrs}h ${mins}m` : `${hrs}h`;
-      }
-
-      const sStr = formatTimeShort(startPt.timeLabel);
-      const eStr = formatTimeShort(endPt.timeLabel);
-      activeRunRangeStr = (sStr === eStr) ? `${sStr} (${durStr})` : `${sStr} - ${eStr} (${durStr})`;
+      const durStr = durMins >= 60 ? (durMins % 60 > 0 ? `${Math.floor(durMins / 60)}h ${durMins % 60}m` : `${Math.floor(durMins / 60)}h`) : `${durMins}m`;
+      const sStr = formatTimeShort(timelineData[startIdx].timeLabel);
+      const eStr = formatTimeShort(timelineData[endIdx].timeLabel);
+      activeRunRangeStr = sStr === eStr ? `${sStr} (${durStr})` : `${sStr} - ${eStr} (${durStr})`;
     }
 
-    // Smart non-blocking tooltip position calculation
     const ttWidth = activeRunRangeStr ? 144 : 126;
     const ttHeight = activeRunRangeStr ? 54 : 44;
     let ttX = activeHourData.cx > 170 ? activeHourData.cx - ttWidth - 10 : activeHourData.cx + 10;
     ttX = Math.max(10, Math.min(340 - ttWidth - 10, ttX));
-
     const minLineY = Math.min(activeHourData.indoorY, activeHourData.setpointY, activeHourData.outdoorY);
     const maxLineY = Math.max(activeHourData.indoorY, activeHourData.setpointY, activeHourData.outdoorY);
-
     let ttY;
-    if (minLineY > (ttHeight + 15)) {
-      ttY = Math.max(10, minLineY - ttHeight - 6);
-    } else if (maxLineY < (140 - ttHeight - 6)) {
-      ttY = Math.min(140 - ttHeight, maxLineY + 6);
-    } else {
-      ttY = activeHourData.indoorY > 80 ? 12 : 90;
-    }
+    if (minLineY > ttHeight + 15) ttY = Math.max(10, minLineY - ttHeight - 6);
+    else if (maxLineY < 140 - ttHeight - 6) ttY = Math.min(140 - ttHeight, maxLineY + 6);
+    else ttY = activeHourData.indoorY > 80 ? 12 : 90;
 
-    // Dynamic Y-axis labels
     const yGridLabels = {
       top: `${maxGridTemp}°`,
       midHigh: `${Math.round(minGridTemp + tempSpan * 0.75)}°`,
-      mid: `${Math.round(minGridTemp + tempSpan * 0.50)}°`,
+      mid: `${Math.round(minGridTemp + tempSpan * 0.5)}°`,
       midLow: `${Math.round(minGridTemp + tempSpan * 0.25)}°`,
-      bottom: `${minGridTemp}°`
+      bottom: `${minGridTemp}°`,
     };
 
-    // Compute active compressor bands dynamically from real HA recorder history
-    let activeBands = [];
+    const activeBands = [];
     let currentBandStart = null;
     let currentBandEnd = null;
-
-    const chunkWidth = totalChunks > 1 ? (280 / (totalChunks - 1)) : 10;
-
+    const chunkWidth = totalChunks > 1 ? 280 / (totalChunks - 1) : 10;
     timelineData.forEach((pt) => {
       if (pt.isActive) {
         const xStart = Math.max(30, pt.cx - chunkWidth / 2);
@@ -1898,34 +2157,570 @@ class PassableHvacCard extends LitElement {
         } else {
           currentBandEnd = xEnd;
         }
-      } else {
-        if (currentBandStart !== null) {
-          activeBands.push({ x: currentBandStart, width: Math.max(3, currentBandEnd - currentBandStart) });
-          currentBandStart = null;
-          currentBandEnd = null;
-        }
+      } else if (currentBandStart !== null) {
+        activeBands.push({ x: currentBandStart, width: Math.max(3, currentBandEnd - currentBandStart) });
+        currentBandStart = null;
+        currentBandEnd = null;
       }
     });
-
     if (currentBandStart !== null) {
       activeBands.push({ x: currentBandStart, width: Math.max(3, currentBandEnd - currentBandStart) });
     }
+    const activeBandsPath = activeBands.map((b) => `M ${b.x.toFixed(1)} 20 H ${(b.x + b.width).toFixed(1)} V 140 H ${b.x.toFixed(1)} Z`).join(" ");
 
-    const activeBandsPath = activeBands.map(b => 
-      `M ${b.x.toFixed(1)} 20 H ${(b.x + b.width).toFixed(1)} V 140 H ${b.x.toFixed(1)} Z`
-    ).join(" ");
-
-    // Dynamic X-axis 24h rolling labels (7 timestamps across 24h)
-    const xLabels = (timelineData && timelineData.length > 0)
-      ? Array.from({ length: 7 }, (_, i) => {
-          const idx = Math.min(timelineData.length - 1, Math.floor(i * (timelineData.length - 1) / 6));
-          return timelineData[idx];
-        }).filter(Boolean)
+    const xLabels = timelineData.length > 0
+      ? Array.from({ length: 7 }, (_, i) => timelineData[Math.min(timelineData.length - 1, Math.floor((i * (timelineData.length - 1)) / 6))]).filter(Boolean)
       : [];
 
-    const indoorPathString = "M " + timelineData.map(pt => `${pt.cx.toFixed(1)} ${pt.indoorY.toFixed(1)}`).join(" L ");
-    const setpointPathString = "M " + timelineData.map(pt => `${pt.cx.toFixed(1)} ${pt.setpointY.toFixed(1)}`).join(" L ");
-    const outdoorPathString = "M " + timelineData.map(pt => `${pt.cx.toFixed(1)} ${pt.outdoorY.toFixed(1)}`).join(" L ");
+    const result = {
+      historyData,
+      activeDay,
+      maxGridHours,
+      runtimeYLabels,
+      barYGridLabels,
+      multiDayPathString,
+      timelineData,
+      selectedChunkIdx,
+      activeHourData,
+      activeRunRangeStr,
+      ttX,
+      ttY,
+      yGridLabels,
+      activeBandsPath,
+      xLabels,
+      indoorPathString: "M " + timelineData.map((pt) => `${pt.cx.toFixed(1)} ${pt.indoorY.toFixed(1)}`).join(" L "),
+      setpointPathString: "M " + timelineData.map((pt) => `${pt.cx.toFixed(1)} ${pt.setpointY.toFixed(1)}`).join(" L "),
+      outdoorPathString: "M " + timelineData.map((pt) => `${pt.cx.toFixed(1)} ${pt.outdoorY.toFixed(1)}`).join(" L "),
+    };
+
+    if (!this._analyticsMemo) this._analyticsMemo = {};
+    this._analyticsMemo[unitKey] = { key: memoKey, value: result };
+    return result;
+  }
+
+  _renderComfortStepperRow(label, icon, entityId, step, unit, iconColor = "var(--primary-color)") {
+    const obj = this._getEntity(entityId);
+    if (!obj || obj.state === "unavailable" || obj.state === "unknown") return html``;
+    const rawVal = parseFloat(obj.state);
+    const valStr = !isNaN(rawVal) ? (step < 1 ? rawVal.toFixed(1) : Math.round(rawVal)) : obj.state;
+    return html`
+      <div class="control-row comfort-stepper-row">
+        <div class="control-label-group">
+          <ha-icon icon="${icon}" style="color:${iconColor};"></ha-icon>
+          <span class="control-label">${label}</span>
+        </div>
+        <div class="step-controller-pill">
+          <button class="pill-btn" @click=${() => this._adjustNumberEntity(entityId, -step)}>-</button>
+          <span class="pill-value" @click=${() => this._showMoreInfo(entityId)} style="cursor:pointer;">${valStr}${unit}</span>
+          <button class="pill-btn" @click=${() => this._adjustNumberEntity(entityId, step)}>+</button>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderAdvisorTabContent({
+    unitKey,
+    zone,
+    unitTitle,
+    advisorRecObj,
+    zoneRateObj,
+    activeModelSource,
+    complianceSummary,
+    hasLearnedSwingCoast,
+    learnedSwing,
+    learnedCoastMag,
+    hasHeatPrediction,
+    predictionMsgObj,
+    profileObj,
+    overrideObj,
+  }) {
+    const winMeta = this._formatWindowAdvisorLabel(advisorRecObj?.state);
+    const winReason = advisorRecObj?.attributes?.reason || advisorRecObj?.attributes?.recommended_action || advisorRecObj?.attributes?.phase || "";
+    const outEnthalpyObj = this._getEntity("sensor.outdoor_specific_enthalpy");
+    const zoneEnthalpyDeltaObj = this._getEntity(`sensor.${zone}_enthalpy_delta`);
+    const zoneAhObj = this._getEntity(`sensor.${zone}_absolute_humidity`);
+    const outAhObj = this._getEntity("sensor.outside_absolute_humidity");
+    const modelAccuracyObj = this._getEntity("sensor.passable_climate_model_accuracy");
+    const complianceSensorObj = this._getEntity("sensor.passable_climate_14d_comfort_compliance");
+    const simDataObj = this._getEntity("sensor.advisor_simulation_data");
+
+    const fmtNum = (obj, decimals = 1, unit = "") => {
+      if (!obj || obj.state === "unavailable" || obj.state === "unknown" || isNaN(parseFloat(obj.state))) return "--";
+      return `${parseFloat(obj.state).toFixed(decimals)}${unit ? ` ${unit}` : ""}`;
+    };
+
+    const predictionText = (predictionMsgObj && predictionMsgObj.state && predictionMsgObj.state !== "unavailable" && predictionMsgObj.state !== "unknown")
+      ? String(predictionMsgObj.state).trim()
+      : "";
+    const showPredictionBanner = hasHeatPrediction || (predictionText.length > 0 && !["none", "idle", "ok", "n/a"].includes(predictionText.toLowerCase()));
+
+    // Parse trajectory points from sensor.advisor_simulation_data
+    let simPoints = [];
+    const rawSimJson = simDataObj?.attributes?.data;
+    if (typeof rawSimJson === "string" && rawSimJson.trim()) {
+      try {
+        const parsed = JSON.parse(rawSimJson);
+        const arr = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.plan) ? parsed.plan : (Array.isArray(parsed?.trajectory) ? parsed.trajectory : []));
+        simPoints = arr
+          .map((pt, i) => {
+            const t = parseFloat(pt.temp ?? pt.indoor_temp ?? pt.temperature);
+            const h = parseFloat(pt.humidity ?? pt.rh);
+            return isNaN(t) ? null : { idx: i, temp: t, humidity: isNaN(h) ? null : h };
+          })
+          .filter(Boolean);
+      } catch (e) {
+        // Ignore malformed simulation JSON safely
+      }
+    }
+
+    const tempMinObj = this._getEntity("number.passable_climate_comfort_temp_min");
+    const tempMaxObj = this._getEntity("number.passable_climate_comfort_temp_max");
+    const bandMin = !isNaN(parseFloat(tempMinObj?.state)) ? parseFloat(tempMinObj.state) : null;
+    const bandMax = !isNaN(parseFloat(tempMaxObj?.state)) ? parseFloat(tempMaxObj.state) : null;
+
+    let complianceText = "N/A";
+    if (complianceSensorObj && complianceSensorObj.state !== "unavailable" && complianceSensorObj.state !== "unknown" && !isNaN(parseFloat(complianceSensorObj.state))) {
+      complianceText = `${Math.round(parseFloat(complianceSensorObj.state))}%`;
+    } else if (complianceSummary && typeof complianceSummary === "object" && complianceSummary.overall_compliance_pct != null) {
+      complianceText = `${Math.round(parseFloat(complianceSummary.overall_compliance_pct))}%`;
+    } else if (typeof complianceSummary === "string") {
+      const m = complianceSummary.match(/\((\d+(?:\.\d+)?)%\)/);
+      if (m) complianceText = `${Math.round(parseFloat(m[1]))}%`;
+    }
+
+    let simSvgHtml = html`
+      <div class="advisor-empty-sim">
+        No active trajectory simulation points yet. Tap <strong>Refresh</strong> to sample.
+      </div>
+    `;
+
+    if (simPoints.length >= 2) {
+      const temps = simPoints.map((p) => p.temp);
+      if (bandMin !== null) temps.push(bandMin);
+      if (bandMax !== null) temps.push(bandMax);
+      const yMin = Math.floor(Math.min(...temps) - 1);
+      const yMax = Math.ceil(Math.max(...temps) + 1);
+      const ySpan = Math.max(1, yMax - yMin);
+      const toX = (i) => 24 + (i / Math.max(1, simPoints.length - 1)) * 276;
+      const toY = (t) => 112 - ((t - yMin) / ySpan) * 92;
+
+      const tempPath = "M " + simPoints.map((p, i) => `${toX(i).toFixed(1)} ${toY(p.temp).toFixed(1)}`).join(" L ");
+      const hasHum = simPoints.every((p) => p.humidity !== null);
+      let humPath = "";
+      if (hasHum) {
+        const hums = simPoints.map((p) => p.humidity);
+        const hMin = Math.floor(Math.min(...hums) - 2);
+        const hMax = Math.ceil(Math.max(...hums) + 2);
+        const hSpan = Math.max(1, hMax - hMin);
+        const toHY = (h) => 112 - ((h - hMin) / hSpan) * 92;
+        humPath = "M " + simPoints.map((p, i) => `${toX(i).toFixed(1)} ${toHY(p.humidity).toFixed(1)}`).join(" L ");
+      }
+
+      const startPt = simPoints[0];
+      const endPt = simPoints[simPoints.length - 1];
+      const deltaT = endPt.temp - startPt.temp;
+      const bandTopY = bandMax !== null ? toY(bandMax) : null;
+      const bandBotY = bandMin !== null ? toY(bandMin) : null;
+
+      simSvgHtml = html`
+        <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.72rem; margin-bottom:6px; color:var(--secondary-text-color);">
+          <span>Start <strong style="color:var(--primary-text-color);">${startPt.temp.toFixed(1)}°F</strong> → Horizon <strong style="color:${deltaT >= 0 ? '#fb923c' : '#38bdf8'};">${endPt.temp.toFixed(1)}°F</strong> (${deltaT >= 0 ? "+" : ""}${deltaT.toFixed(1)}°)</span>
+          <span style="display:flex; align-items:center; gap:8px;">
+            <span style="display:inline-flex; align-items:center; gap:3px;"><span style="width:8px; height:2px; background:#38bdf8; display:inline-block;"></span>Temp</span>
+            ${hasHum ? html`<span style="display:inline-flex; align-items:center; gap:3px;"><span style="width:8px; height:2px; background:#a855f7; display:inline-block;"></span>RH</span>` : ""}
+          </span>
+        </div>
+        <div style="width:100%; aspect-ratio: 2.35 / 1;">
+          <svg viewBox="0 0 320 128" style="width:100%; height:100%; overflow:visible;">
+            ${bandTopY !== null && bandBotY !== null
+              ? svg`<rect x="24" y="${Math.min(bandTopY, bandBotY)}" width="276" height="${Math.max(2, Math.abs(bandBotY - bandTopY))}" fill="rgba(34,197,94,0.10)" rx="4"/>`
+              : ""}
+            <line x1="24" y1="20" x2="300" y2="20" stroke="var(--divider-color, rgba(148,163,184,0.22))" stroke-dasharray="3 3"/>
+            <text x="2" y="24" fill="var(--secondary-text-color, #94a3b8)" font-size="9">${yMax}°</text>
+            <line x1="24" y1="66" x2="300" y2="66" stroke="var(--divider-color, rgba(148,163,184,0.18))" stroke-dasharray="3 3"/>
+            <text x="2" y="70" fill="var(--secondary-text-color, #94a3b8)" font-size="9">${Math.round((yMax + yMin) / 2)}°</text>
+            <line x1="24" y1="112" x2="300" y2="112" stroke="var(--divider-color, rgba(148,163,184,0.28))"/>
+            <text x="2" y="115" fill="var(--secondary-text-color, #94a3b8)" font-size="9">${yMin}°</text>
+            ${humPath ? svg`<path d="${humPath}" fill="none" stroke="#a855f7" stroke-width="1.6" stroke-dasharray="3 3" opacity="0.85"/>` : ""}
+            <path d="${tempPath}" fill="none" stroke="#38bdf8" stroke-width="2.4" stroke-linecap="round"/>
+            <circle cx="${toX(0)}" cy="${toY(startPt.temp)}" r="3.5" fill="#38bdf8"/>
+            <circle cx="${toX(simPoints.length - 1)}" cy="${toY(endPt.temp)}" r="4" fill="${deltaT >= 0 ? '#fb923c' : '#38bdf8'}" stroke="var(--card-background-color, #fff)" stroke-width="1.5"/>
+          </svg>
+        </div>
+      `;
+    }
+
+    const activeProfStr = (overrideObj?.state && overrideObj.state !== "unavailable" && overrideObj.state !== "unknown" && overrideObj.state.trim())
+      || (profileObj?.state && profileObj.state !== "unavailable" && profileObj.state !== "unknown" ? profileObj.state : null);
+
+    return html`
+      <!-- 1. WINDOW & OVERNIGHT ADVISOR BANNER -->
+      <div class="passable-section-card">
+        <div class="passable-section-header" style="margin-bottom:8px;">
+          <div class="passable-section-title">
+            <ha-icon icon="mdi:window-open-variant" style="--mdc-icon-size:18px; color:var(--primary-color);"></ha-icon>
+            <span>WINDOW & CLIMATE ADVISOR</span>
+          </div>
+          <div style="display:flex; gap:6px; align-items:center;">
+            <span class="advisor-tone-badge ${winMeta.tone}">${winMeta.text}</span>
+            ${this._hasEntity("button.passable_climate_refresh_window_recommendation")
+              ? html`
+                  <button
+                    class="action-mini-btn"
+                    @click=${() => this._pressButtonEntity("button.passable_climate_refresh_window_recommendation")}
+                    title="Recalculate window & thermal recommendation now"
+                  >
+                    <ha-icon icon="mdi:refresh"></ha-icon>
+                    <span>Refresh</span>
+                  </button>
+                `
+              : ""}
+          </div>
+        </div>
+
+        ${winReason || activeProfStr
+          ? html`
+              <div style="font-size:0.76rem; color:var(--secondary-text-color); line-height:1.4; margin-bottom:8px;">
+                ${activeProfStr ? html`<span style="font-weight:700; color:var(--primary-text-color);">Profile: ${activeProfStr}</span>${winReason ? " • " : ""}` : ""}
+                ${winReason}
+              </div>
+            `
+          : ""}
+
+        ${showPredictionBanner
+          ? html`
+              <div class="advisor-alert-banner ${hasHeatPrediction ? 'warn' : 'info'}" @click=${() => this._showMoreInfo("input_text.hvac_advisor_prediction_message")} style="cursor:pointer;">
+                <ha-icon icon="${hasHeatPrediction ? 'mdi:fire-alert' : 'mdi:information-outline'}"></ha-icon>
+                <div>
+                  <strong>${hasHeatPrediction ? "Overnight Heating Predicted" : "Advisor Forecast Note"}</strong>
+                  ${predictionText ? html`<div style="font-size:0.72rem; opacity:0.9;">${predictionText}</div>` : ""}
+                </div>
+              </div>
+            `
+          : ""}
+
+        <!-- Psychrometric Telemetry Row -->
+        <div class="hvac-psychro-row">
+          <div class="psychro-pill" @click=${() => this._showMoreInfo(`sensor.${zone}_enthalpy_delta`)}>
+            <span class="psychro-label">${unitTitle.split("&")[0].trim()} Δh</span>
+            <span class="psychro-val">${fmtNum(zoneEnthalpyDeltaObj, 1, zoneEnthalpyDeltaObj?.attributes?.unit_of_measurement || "")}</span>
+          </div>
+          <div class="psychro-pill" @click=${() => this._showMoreInfo("sensor.outdoor_specific_enthalpy")}>
+            <span class="psychro-label">Out Enthalpy</span>
+            <span class="psychro-val">${fmtNum(outEnthalpyObj, 1, outEnthalpyObj?.attributes?.unit_of_measurement || "")}</span>
+          </div>
+          <div class="psychro-pill" @click=${() => this._showMoreInfo(`sensor.${zone}_absolute_humidity`)}>
+            <span class="psychro-label">In / Out AH</span>
+            <span class="psychro-val">${fmtNum(zoneAhObj, 1)} / ${fmtNum(outAhObj, 1, outAhObj?.attributes?.unit_of_measurement || "g/m³")}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. FORWARD TRAJECTORY SIMULATION -->
+      <div class="passable-section-card">
+        <div class="passable-section-header" style="margin-bottom:6px;">
+          <div class="passable-section-title">
+            <ha-icon icon="mdi:chart-bell-curve-cumulative" style="--mdc-icon-size:18px; color:#38bdf8;"></ha-icon>
+            <span>THERMAL TRAJECTORY SIMULATION</span>
+          </div>
+          ${simPoints.length >= 2 ? html`<span class="passable-count-pill">${simPoints.length} Steps</span>` : ""}
+        </div>
+        ${simSvgHtml}
+      </div>
+
+      <!-- 3. MLR LEARNING & MODEL TELEMETRY -->
+      <div class="passable-section-card">
+        <div class="passable-section-header" style="margin-bottom:8px;">
+          <div class="passable-section-title">
+            <ha-icon icon="mdi:brain" style="--mdc-icon-size:18px; color:var(--primary-color);"></ha-icon>
+            <span>MLR THERMAL MODELING</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            ${activeModelSource
+              ? html`
+                  <span
+                    class="passable-count-pill"
+                    style="${activeModelSource === 'InfluxDB MLR' ? 'background:rgba(34,197,94,0.16); color:#16a34a;' : 'background:rgba(56,189,248,0.16); color:#0284c7;'}"
+                  >${activeModelSource}</span>
+                `
+              : ""}
+            ${this._hasEntity("button.passable_climate_retrain_thermal_models")
+              ? html`
+                  <button
+                    class="action-mini-btn"
+                    @click=${() => this._pressButtonEntity("button.passable_climate_retrain_thermal_models")}
+                    title="Retrain MLR thermal coefficients from InfluxDB history"
+                  >
+                    <ha-icon icon="mdi:school-outline"></ha-icon>
+                    <span>Retrain</span>
+                  </button>
+                `
+              : ""}
+          </div>
+        </div>
+
+        <div class="passable-stat-grid" style="margin-bottom:6px;">
+          <div class="passable-stat-block">
+            <span class="stat-block-label">ZONE DRIFT</span>
+            <span class="stat-block-val" style="font-size:1.05rem; color:#0284c7;">
+              ${(zoneRateObj && zoneRateObj.state && !isNaN(parseFloat(zoneRateObj.state)))
+                ? `${parseFloat(zoneRateObj.state) >= 0 ? "+" : ""}${parseFloat(zoneRateObj.state).toFixed(2)}°/h`
+                : "--"}
+            </span>
+          </div>
+          <div class="passable-stat-block">
+            <span class="stat-block-label">SWING / COAST</span>
+            <span class="stat-block-val" style="font-size:0.95rem; color:#d97706;">
+              ${hasLearnedSwingCoast
+                ? `±${parseFloat(learnedSwing).toFixed(1)}° / ${learnedCoastMag !== undefined && learnedCoastMag !== null && !isNaN(parseFloat(learnedCoastMag)) ? `${parseFloat(learnedCoastMag).toFixed(1)}°` : "--"}`
+                : "--"}
+            </span>
+          </div>
+          <div class="passable-stat-block">
+            <span class="stat-block-label">14D COMPLIANCE</span>
+            <span class="stat-block-val" style="font-size:1.05rem; color:#16a34a;">
+              ${complianceText}
+            </span>
+          </div>
+        </div>
+
+        ${(modelAccuracyObj && modelAccuracyObj.state !== "unavailable" && modelAccuracyObj.state !== "unknown") ||
+          (complianceSummary?.avg_response_lag_mins != null)
+          ? html`
+              <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.74rem; color:var(--secondary-text-color); padding-top:6px; border-top:1px solid var(--divider-color, rgba(128,128,128,0.16));">
+                ${modelAccuracyObj && modelAccuracyObj.state !== "unavailable" && modelAccuracyObj.state !== "unknown"
+                  ? html`<span>Model Accuracy: <strong style="color:var(--primary-text-color);">${modelAccuracyObj.state}${modelAccuracyObj.attributes?.unit_of_measurement || "%"}</strong></span>`
+                  : html`<span>Advisor: <strong style="color:var(--primary-text-color);">${winMeta.text}</strong></span>`}
+                ${complianceSummary && complianceSummary.avg_response_lag_mins != null
+                  ? html`<span>Avg Response: <strong style="color:var(--primary-text-color);">${Math.round(parseFloat(complianceSummary.avg_response_lag_mins))}m</strong></span>`
+                  : ""}
+              </div>
+            `
+          : ""}
+      </div>
+
+      <!-- 4. INTERACTIVE ASHRAE 55 COMFORT ENVELOPE & TRANSITION CONTROLS -->
+      <div class="passable-section-card">
+        <div class="passable-section-header" style="margin-bottom:8px;">
+          <div class="passable-section-title">
+            <ha-icon icon="mdi:thermometer-lines" style="--mdc-icon-size:18px; color:var(--primary-color);"></ha-icon>
+            <span>ASHRAE 55 COMFORT ENVELOPE</span>
+          </div>
+        </div>
+        ${this._renderComfortStepperRow("Comfort Temp Min", "mdi:thermometer-chevron-down", "number.passable_climate_comfort_temp_min", 0.5, "°F", "#38bdf8")}
+        ${this._renderComfortStepperRow("Comfort Temp Max", "mdi:thermometer-chevron-up", "number.passable_climate_comfort_temp_max", 0.5, "°F", "#fb923c")}
+        ${this._renderComfortStepperRow("Humidity Min", "mdi:water-minus", "number.passable_climate_comfort_humidity_min", 1, "%", "#0284c7")}
+        ${this._renderComfortStepperRow("Humidity Max", "mdi:water-plus", "number.passable_climate_comfort_humidity_max", 1, "%", "#6366f1")}
+        ${this._renderComfortStepperRow("Dew Point Max", "mdi:weather-fog", "number.passable_climate_comfort_dew_point_max", 0.5, "°F", "#14b8a6")}
+        ${this._renderComfortStepperRow("Pre-Sleep Transition Offset", "mdi:weather-night", "input_number.hvac_transition_offset", 5, " min", "#a855f7")}
+      </div>
+    `;
+  }
+
+  _renderHvacModal(systems = []) {
+    if (!this._hvacModal) return html``;
+
+    const { unitKey, type } = this._hvacModal;
+    const activeTab = this._activeHvacTab || type || "setpoints";
+    const c = this.config;
+    const sysConfig = (systems || []).find((s) => s.key === unitKey) || {};
+    const unitTitle = sysConfig.name || (unitKey === "downstairs" ? "Downstairs & Basement" : "Upstairs & Attic");
+    const resolveEntity = (primaryId, fallbacks) => {
+      if (this.hass && this.hass.states[primaryId]) return primaryId;
+      for (const fb of fallbacks) {
+        if (this.hass && this.hass.states[fb]) return fb;
+      }
+      return primaryId;
+    };
+
+    const zoneClimate = this._resolveZoneClimate(unitKey, sysConfig);
+    const zone = zoneClimate.zone;
+    const climateId = zoneClimate.controlId;
+    const companionId = zoneClimate.companionId;
+    const climate = zoneClimate.controlObj;
+
+    const acCondensersId = c.ac_condensers_uncovered || "input_boolean.ac_condensers_uncovered";
+    const outdoorTempId = resolveEntity(
+      sysConfig.outdoor_temp || c.outdoor_temp_sensor || c.outdoor_temp,
+      ["sensor.outside_temperature", "sensor.outdoor_temperature", "weather.home", "weather.downstairs", "weather.upstairs"]
+    );
+    const fanCircId = sysConfig.fan_circulation || c[`${unitKey}_fan_circulation`] || `input_number.hvac_fan_circulation_${zone}`;
+    const fanCircActiveId = sysConfig.fan_circ_active || c[`${unitKey}_fan_circ_active`] || `input_boolean.hvac_fan_circulation_active_${zone}`;
+    const overshootActiveId = sysConfig.overshoot_active || c[`${unitKey}_overshoot_active`] || `input_boolean.hvac_overshoot_active_${zone}`;
+    const coolOvershootId = sysConfig.cool_overshoot || c[`${unitKey}_cool_overshoot`] || "input_number.hvac_overshoot_amount_cool";
+    const heatOvershootId = sysConfig.heat_overshoot || c[`${unitKey}_heat_overshoot`] || "input_number.hvac_overshoot_amount_heat";
+    const coolThreshId = sysConfig.cool_overshoot_thresh || c[`${unitKey}_cool_overshoot_thresh`] || "input_number.hvac_overshoot_threshold_cool";
+    const heatThreshId = sysConfig.heat_overshoot_thresh || c[`${unitKey}_heat_overshoot_thresh`] || "input_number.hvac_overshoot_threshold_heat";
+
+    const acCondensersObj = this._getEntity(acCondensersId);
+    const outdoorTempObj = this._getEntity(outdoorTempId);
+    const fanCircObj = this._getEntity(fanCircId);
+    const fanCircActiveObj = this._getEntity(fanCircActiveId);
+    const overshootActiveObj = this._getEntity(overshootActiveId);
+    const heatOvershoot = this._getEntity(heatOvershootId);
+    const coolOvershoot = this._getEntity(coolOvershootId);
+    const coolThresh = this._getEntity(coolThreshId);
+    const heatThresh = this._getEntity(heatThreshId);
+
+    const filterMetrics = this._getZoneFilterMetrics(unitKey, sysConfig);
+    const modalSensors = this._getSystemSensors(unitKey, sysConfig, climateId);
+    const zonePower = this._getZonePowerMetrics(zone, sysConfig);
+
+    const coolTodaySensorId = sysConfig.cool_today || c[`${unitKey}_cool_today`] || `sensor.hvac_${zone}_cooling_today`;
+    const heatTodaySensorId = sysConfig.heat_today || c[`${unitKey}_heat_today`] || `sensor.hvac_${zone}_heating_today`;
+    const fanTodaySensorId = `sensor.hvac_${zone}_fan_today`;
+    const cyclesPerHrSensorId = `sensor.hvac_${zone}_cycles_per_hour`;
+    const coolDailySensorId = sysConfig.cool_daily || c[`${unitKey}_cool_daily`] || `sensor.hvac_${zone}_cooling_daily`;
+    const heatDailySensorId = sysConfig.heat_daily || c[`${unitKey}_heat_daily`] || `sensor.hvac_${zone}_heating_daily`;
+
+    const coolTodayObj = this._getEntity(coolTodaySensorId) || this._getEntity(`sensor.hvac_${zone}_cooling_runtime_today`);
+    const heatTodayObj = this._getEntity(heatTodaySensorId) || this._getEntity(`sensor.hvac_${zone}_heating_runtime_today`);
+    const fanTodayObj = this._getEntity(fanTodaySensorId);
+    const cyclesObj = this._getEntity(cyclesPerHrSensorId);
+
+    const liveCoolToday = (coolTodayObj && coolTodayObj.state && !isNaN(parseFloat(coolTodayObj.state)))
+      ? parseFloat(parseFloat(coolTodayObj.state).toFixed(1))
+      : 0.0;
+    const liveHeatToday = (heatTodayObj && heatTodayObj.state && !isNaN(parseFloat(heatTodayObj.state)))
+      ? parseFloat(parseFloat(heatTodayObj.state).toFixed(1))
+      : 0.0;
+    const liveFanToday = (fanTodayObj && fanTodayObj.state && !isNaN(parseFloat(fanTodayObj.state)))
+      ? parseFloat(parseFloat(fanTodayObj.state).toFixed(1))
+      : null;
+    const liveCyclesPerHr = (cyclesObj && cyclesObj.state && !isNaN(parseFloat(cyclesObj.state)))
+      ? parseFloat(cyclesObj.state).toFixed(1)
+      : null;
+
+    const presetModes = zoneClimate.presetModes.length > 0 ? zoneClimate.presetModes : ["home", "away", "sleep", "ECO", "Alt Sleep"];
+    const presetEntityId = zoneClimate.presetEntityId || climateId;
+    const profileObj = this._getEntity("input_text.hvac_active_profile");
+    const overrideObj = this._getEntity("input_text.hvac_active_profile_override");
+    const presetConfigObj = this._getEntity(sysConfig.setpoint_preset || c[`${unitKey}_setpoint_preset`] || "input_text.hvac_active_profile");
+    const currentPreset = (zoneClimate.activePresetMode && zoneClimate.activePresetMode !== "temp" && zoneClimate.activePresetMode !== "none")
+      ? zoneClimate.activePresetMode
+      : ((presetConfigObj && presetConfigObj.state && presetConfigObj.state !== "unavailable" && presetConfigObj.state !== "unknown") ? presetConfigObj.state : "home");
+    const isUpstairs = zone === "upstairs";
+
+    const timeToTempId = sysConfig.time_to_temp || c[`${unitKey}_time_to_temp`] || `sensor.hvac_time_to_temp_${zone}`;
+    const timeToTempObj = this._getEntity(timeToTempId);
+    const healthStatusId = sysConfig.health_status || c[`${unitKey}_health_status`] || `sensor.hvac_health_status_${zone}`;
+    const healthStatusObj = this.hass?.states?.[healthStatusId] || null;
+    const modalHealthState = (healthStatusObj && healthStatusObj.state && healthStatusObj.state !== "unavailable" && healthStatusObj.state !== "unknown")
+      ? String(healthStatusObj.state)
+      : "Optimal";
+    const modalIsHealthAlert = modalHealthState !== "Optimal" && modalHealthState !== "Healthy";
+    const modalStallReason = healthStatusObj?.attributes?.stall_reason ? String(healthStatusObj.attributes.stall_reason) : "";
+
+    const isModalHeat = climate && (climate.state === "heat" || (climate.attributes && climate.attributes.hvac_action === "heating"));
+    const learnedSwing = timeToTempObj?.attributes?.learned_deadband_swing_f
+      ?? (isModalHeat ? timeToTempObj?.attributes?.learned_swing_heat_f : timeToTempObj?.attributes?.learned_swing_cool_f)
+      ?? timeToTempObj?.attributes?.learned_swing_heat_f;
+    const learnedCoastMag = timeToTempObj?.attributes?.learned_coast_magnitude_f
+      ?? timeToTempObj?.attributes?.learned_coast_f;
+    const learnedCoastDur = timeToTempObj?.attributes?.learned_coast_duration_mins
+      ?? timeToTempObj?.attributes?.learned_coast_minutes;
+    const hasLearnedSwingCoast = learnedSwing !== undefined && learnedSwing !== null && !isNaN(parseFloat(learnedSwing));
+    const modalNextCycleMode = (!timeToTempObj?.attributes?.pre_condition_needed && timeToTempObj?.attributes?.next_hvac_cycle_mode)
+      ? String(timeToTempObj.attributes.next_hvac_cycle_mode)
+      : "";
+    const modalNextCycleTime = (!timeToTempObj?.attributes?.pre_condition_needed && timeToTempObj?.attributes?.next_hvac_cycle_time)
+      ? String(timeToTempObj.attributes.next_hvac_cycle_time)
+      : "";
+
+    const advisorRecObj = this.hass?.states?.[c.window_recommendation_entity || "sensor.passable_climate_window_recommendation"] || null;
+    const sleepOffsetF = (isUpstairs && advisorRecObj?.attributes?.recommended_sleep_offset_f)
+      ? parseFloat(advisorRecObj.attributes.recommended_sleep_offset_f)
+      : 0;
+    const sleepOffsetReason = (isUpstairs && advisorRecObj?.attributes?.sleep_offset_reason) ? String(advisorRecObj.attributes.sleep_offset_reason) : "";
+    const sleepLimitingRoom = (isUpstairs && advisorRecObj?.attributes?.sleep_limiting_room) ? String(advisorRecObj.attributes.sleep_limiting_room) : "";
+
+    const zoneRateObj = this.hass?.states?.[`sensor.${zone}_fault_tolerant_temp_rate`] || null;
+    const profileClosedObj = this.hass?.states?.[`sensor.plot_data_${zone}_temp_profile_win_closed`] || null;
+    const activeModelSource = profileClosedObj?.attributes?.active_model_source || null;
+    const complianceSummary = advisorRecObj?.attributes?.compliance_summary || null;
+    const hasHeatPrediction = this._getEntity("input_boolean.hvac_advisor_predicts_heat_needed")?.state === "on";
+    const predictionMsgObj = this._getEntity("input_text.hvac_advisor_prediction_message");
+
+    const modalHvacAction = (climate && climate.attributes && climate.attributes.hvac_action) || (climate && climate.state) || "idle";
+    const modalCurrentTemp = zoneClimate.currentTemp !== null ? zoneClimate.currentTemp.toFixed(1) : "--";
+    const modalHumidity = zoneClimate.currentHumidity !== null ? Math.round(zoneClimate.currentHumidity) : null;
+    const modalTempStep = this._getHvacTempStep(climate);
+    const modalMode = (climate.state || "").toLowerCase();
+    const isHeatCoolRange = (modalMode === "heat_cool" || modalMode === "auto") && climate?.attributes?.target_temp_low != null && climate?.attributes?.target_temp_high != null;
+    const modalLowTarget = parseFloat(climate?.attributes?.target_temp_low);
+    const modalHighTarget = parseFloat(climate?.attributes?.target_temp_high);
+    const modalTargetRaw = parseFloat(climate?.attributes?.temperature);
+    const modalTargetTemp = !isNaN(modalTargetRaw)
+      ? (modalTempStep < 1 ? Math.round(modalTargetRaw * 10) / 10 : Math.round(modalTargetRaw))
+      : 70;
+    const modalTimeMins = (timeToTempObj && timeToTempObj.state && !isNaN(parseFloat(timeToTempObj.state))) ? Math.round(parseFloat(timeToTempObj.state)) : 0;
+    const modalTimeStr = ((modalHvacAction === "cooling" || modalHvacAction === "heating") && modalTimeMins > 0) ? `~${modalTimeMins}m` : "";
+    const modalOvershootOn = overshootActiveObj && overshootActiveObj.state === "on";
+    const isPresetsExpanded = Boolean(this._expandedModalSections && this._expandedModalSections[`presets_${unitKey}`]);
+    const isOvershootExpanded = Boolean(this._expandedModalSections && this._expandedModalSections[`overshoot_${unitKey}`]);
+
+    const isHeatingSeason = climate && (climate.state === "heat" || (climate.attributes && climate.attributes.hvac_action === "heating"));
+    const selectedDayIdx = (this._selectedHvacDayIndex !== undefined && this._selectedHvacDayIndex !== null) ? this._selectedHvacDayIndex : 9;
+    const graphMode = this._hvacGraphMode || "multiday";
+    const stepMinutes = parseInt(this._hvacTimelineRes || 15, 10);
+
+    const getOutdoorTempNum = (obj) => {
+      if (!obj) return null;
+      if (obj.attributes?.temperature !== undefined && obj.attributes.temperature !== null && !isNaN(parseFloat(obj.attributes.temperature))) {
+        return parseFloat(obj.attributes.temperature);
+      }
+      if (obj.state && !isNaN(parseFloat(obj.state))) return parseFloat(obj.state);
+      return null;
+    };
+    const liveOutdoorTemp = getOutdoorTempNum(outdoorTempObj);
+    const liveOutdoorTempStr = liveOutdoorTemp !== null ? liveOutdoorTemp.toFixed(1) : "--";
+
+    const cachedHistory = (this._hvacHistoryCache && this._hvacHistoryCache[unitKey]) ? this._hvacHistoryCache[unitKey] : null;
+    const fallbackIndoor = zoneClimate.currentTemp !== null ? zoneClimate.currentTemp : 72;
+    const fallbackSetpoint = climate?.attributes?.temperature ?? climate?.attributes?.target_temp_low ?? climate?.attributes?.target_temp_high ?? 72;
+
+    const {
+      historyData,
+      activeDay,
+      maxGridHours,
+      runtimeYLabels,
+      barYGridLabels,
+      multiDayPathString,
+      timelineData,
+      selectedChunkIdx,
+      activeHourData,
+      activeRunRangeStr,
+      ttX,
+      ttY,
+      yGridLabels,
+      activeBandsPath,
+      xLabels,
+      indoorPathString,
+      setpointPathString,
+      outdoorPathString,
+    } = this._getProcessedHvacAnalytics({
+      unitKey,
+      cachedHistory,
+      selectedDayIdx,
+      selectedChunkIdxInput: this._selectedHvacChunkIndex,
+      stepMinutes,
+      isHeatingSeason,
+      liveCoolToday,
+      liveHeatToday,
+      liveOutdoorTemp,
+      liveOutdoorTempStr,
+      fallbackIndoor,
+      fallbackSetpoint,
+      coolDailySensorId,
+      heatDailySensorId,
+      coolTodaySensorId,
+      heatTodaySensorId,
+      outdoorTempId,
+    });
+
+    const fanMinVal = zoneClimate.fanMinOnTime !== null
+      ? Math.round(parseFloat(zoneClimate.fanMinOnTime))
+      : (fanCircObj && fanCircObj.state !== "unavailable" && !isNaN(parseFloat(fanCircObj.state)) ? Math.round(parseFloat(fanCircObj.state)) : null);
 
     return html`
       <div class="popup-overlay" @click=${() => this._closeHvacModal()}>
@@ -1944,7 +2739,7 @@ class PassableHvacCard extends LitElement {
             <h3>${unitTitle} Controls & Analytics</h3>
           </div>
 
-          <!-- Tabbed Header Bar -->
+          <!-- 4-Tab Header Bar -->
           <div class="popup-tabs">
             <button
               class="popup-tab ${activeTab === 'setpoints' ? 'active-tab' : ''}"
@@ -1958,7 +2753,14 @@ class PassableHvacCard extends LitElement {
               @click=${() => this._switchHvacTab('stats')}
             >
               <ha-icon icon="mdi:chart-box"></ha-icon>
-              <span>Stats & Fan</span>
+              <span>Stats & Power</span>
+            </button>
+            <button
+              class="popup-tab ${activeTab === 'advisor' ? 'active-tab' : ''}"
+              @click=${() => this._switchHvacTab('advisor')}
+            >
+              <ha-icon icon="mdi:brain"></ha-icon>
+              <span>Advisor & Comfort</span>
             </button>
             <button
               class="popup-tab ${activeTab === 'filter' ? 'active-tab' : ''}"
@@ -1968,13 +2770,13 @@ class PassableHvacCard extends LitElement {
               <span>Filter & Maint</span>
             </button>
           </div>
+
           <div style="display:flex; flex-direction:column; gap:12px;">
             ${activeTab === "setpoints"
               ? html`
                   <!-- HERO THERMOSTAT CONTROL CARD -->
                   <div class="passable-section-card">
                     <div class="hero-setpoint-banner">
-                      <!-- Left: Current Indoor Readout & Active Status -->
                       <div class="hero-current-col">
                         <span class="hero-col-label">CURRENT INDOOR</span>
                         <div class="hero-current-val-row">
@@ -1985,7 +2787,7 @@ class PassableHvacCard extends LitElement {
                         </div>
                         <div class="hero-status-badges">
                           ${modalTimeStr
-                            ? html`<span class="passable-badge ${modalHvacAction === 'heating' ? 'badge-heat' : 'badge-cool'}"><ha-icon icon="mdi:clock-fast"></ha-icon>~${modalTimeStr} to ${modalTargetTemp}°</span>`
+                            ? html`<span class="passable-badge ${modalHvacAction === 'heating' ? 'badge-heat' : 'badge-cool'}"><ha-icon icon="mdi:clock-fast"></ha-icon>${modalTimeStr} to ${modalTargetTemp}°</span>`
                             : html`<span class="passable-badge badge-neutral">${modalHvacAction === 'heating' ? 'Heating Active' : modalHvacAction === 'cooling' ? 'Cooling Active' : (modalNextCycleMode && modalNextCycleTime ? `Next ${modalNextCycleMode === 'cool' ? 'Cool' : 'Heat'} ~${modalNextCycleTime}` : 'Holding Target')}</span>`}
                           ${modalOvershootOn
                             ? html`<span class="passable-badge badge-overshoot"><ha-icon icon="mdi:delta"></ha-icon>Overshoot Active</span>`
@@ -2004,37 +2806,49 @@ class PassableHvacCard extends LitElement {
                         </div>
                       </div>
 
-                      <!-- Right: Large Target Setpoint Stepper -->
                       <div class="hero-target-col">
-                        <span class="hero-col-label">TARGET SETPOINT</span>
-                        <div class="hero-stepper-pill">
-                          <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, -modalTempStep)}>-</button>
-                          <span class="hero-step-val">${modalTargetTemp}°F</span>
-                          <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, modalTempStep)}>+</button>
-                        </div>
+                        <span class="hero-col-label">${isHeatCoolRange ? "HEAT / COOL BAND" : "TARGET SETPOINT"}</span>
+                        ${isHeatCoolRange
+                          ? html`
+                              <div style="display:flex; flex-direction:column; gap:6px; align-items:flex-end;">
+                                <div class="hero-stepper-pill compact-dual">
+                                  <ha-icon icon="mdi:fire" style="--mdc-icon-size:14px; color:#f97316;"></ha-icon>
+                                  <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, -modalTempStep, "low")}>-</button>
+                                  <span class="hero-step-val">${Math.round(modalLowTarget)}°</span>
+                                  <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, modalTempStep, "low")}>+</button>
+                                </div>
+                                <div class="hero-stepper-pill compact-dual">
+                                  <ha-icon icon="mdi:snowflake" style="--mdc-icon-size:14px; color:#38bdf8;"></ha-icon>
+                                  <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, -modalTempStep, "high")}>-</button>
+                                  <span class="hero-step-val">${Math.round(modalHighTarget)}°</span>
+                                  <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, modalTempStep, "high")}>+</button>
+                                </div>
+                              </div>
+                            `
+                          : html`
+                              <div class="hero-stepper-pill">
+                                <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, -modalTempStep)}>-</button>
+                                <span class="hero-step-val">${modalTargetTemp}°F</span>
+                                <button class="hero-step-btn" @click=${() => this._adjustHvacTemp(climateId, modalTempStep)}>+</button>
+                              </div>
+                            `}
                       </div>
                     </div>
 
                     ${modalIsHealthAlert && modalStallReason
                       ? html`
-                          <div
-                            style="background:rgba(245,158,11,0.14); border:1px solid rgba(245,158,11,0.4); border-radius:10px; padding:8px 10px; margin-bottom:10px; display:flex; align-items:flex-start; gap:8px; font-size:0.75rem; color:var(--primary-text-color);"
-                          >
-                            <ha-icon icon="mdi:alert-circle-outline" style="--mdc-icon-size:16px; color:#f59e0b; flex-shrink:0; margin-top:1px;"></ha-icon>
-                            <div>
-                              <strong style="color:#f59e0b;">${modalHealthState}:</strong> ${modalStallReason}
-                            </div>
+                          <div class="advisor-alert-banner warn" style="margin-bottom:10px;">
+                            <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
+                            <div><strong>${modalHealthState}:</strong> ${modalStallReason}</div>
                           </div>
                         `
                       : ""}
 
                     ${isUpstairs && sleepOffsetF !== 0 && !isNaN(sleepOffsetF)
                       ? html`
-                          <div
-                            style="background:rgba(56,189,248,0.12); border:1px solid rgba(56,189,248,0.35); border-radius:10px; padding:8px 10px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; gap:8px;"
-                          >
-                            <div style="font-size:0.74rem; line-height:1.3; color:var(--primary-text-color);">
-                              <div style="font-weight:700; color:#38bdf8; display:flex; align-items:center; gap:4px;">
+                          <div class="advisor-alert-banner info" style="margin-bottom:10px; justify-content:space-between;">
+                            <div style="line-height:1.3;">
+                              <div style="font-weight:700; display:flex; align-items:center; gap:4px;">
                                 <ha-icon icon="mdi:bed-clock" style="--mdc-icon-size:14px;"></ha-icon>
                                 <span>Sleep Comfort Advisory${sleepLimitingRoom ? ` (${sleepLimitingRoom})` : ""}</span>
                               </div>
@@ -2059,29 +2873,33 @@ class PassableHvacCard extends LitElement {
                       <span class="passable-group-label">HVAC Mode</span>
                       <div class="passable-segmented-row">
                         ${["cool", "heat", "auto", "off"].map(
-                          (m) => html`
-                            <button
-                              class="hvac-mode-btn ${climate.state === m ? "active" : ""}"
-                              @click=${() => this._setHvacMode(climateId, m)}
-                            >
-                              ${m.toUpperCase()}
-                            </button>
-                          `
+                          (m) => {
+                            const isActiveMode = modalMode === m || (m === "auto" && modalMode === "heat_cool");
+                            return html`
+                              <button
+                                class="hvac-mode-btn ${isActiveMode ? "active" : ""}"
+                                @click=${() => this._setHvacMode(climateId, m, companionId)}
+                              >
+                                ${m.toUpperCase()}
+                              </button>
+                            `;
+                          }
                         )}
                       </div>
                     </div>
 
-                    <!-- Segmented Preset Selector -->
+                    <!-- Segmented Preset Selector (routed to companion Ecobee entity when HK primary lacks presets) -->
                     <div class="passable-control-group" style="margin-top:8px;">
-                      <span class="passable-group-label">Active Preset</span>
-                      <div class="passable-segmented-row">
+                      <span class="passable-group-label">Active Preset${zoneClimate.companionId ? " (Ecobee)" : ""}</span>
+                      <div class="passable-segmented-row" style="flex-wrap:wrap;">
                         ${presetModes.map(
                           (p) => html`
                             <button
                               class="hvac-mode-btn ${currentPreset.toLowerCase() === p.toLowerCase() ? "active" : ""}"
-                              @click=${() => this._setHvacPresetMode(climateId, p)}
+                              style="flex:1 1 auto; min-width:58px;"
+                              @click=${() => this._setHvacPresetMode(presetEntityId, p)}
                             >
-                              ${p}
+                              ${p === "away_indefinitely" ? "Away Indef" : p}
                             </button>
                           `
                         )}
@@ -2124,13 +2942,13 @@ class PassableHvacCard extends LitElement {
                               <span class="sensor-tile-name">${s.cleanName}</span>
                               <span
                                 class="sensor-tile-status ${s.isActive ? 'active' : 'standby'}"
-                                style="${s.isLimiting ? 'background:rgba(245,158,11,0.22); color:#f59e0b;' : ''}"
+                                style="${s.isLimiting ? 'background:rgba(245,158,11,0.22); color:#d97706;' : ''}"
                               >
                                 ${s.isLimiting ? "Limiting" : (s.isActive ? "Active" : "Standby")}
                               </span>
                             </div>
                             <div style="display:flex; justify-content:space-between; align-items:baseline; gap:4px;">
-                              <div class="sensor-tile-temp">${s.temp}°</div>
+                              <div class="sensor-tile-temp">${typeof s.temp === 'number' ? s.temp.toFixed(1) : s.temp}°</div>
                               ${s.passiveRate
                                 ? html`<span style="font-size:0.65rem; font-weight:700; color:var(--secondary-text-color);">${s.passiveRate}</span>`
                                 : ""}
@@ -2156,29 +2974,27 @@ class PassableHvacCard extends LitElement {
 
                     ${isPresetsExpanded ? html`
                       <div class="passable-accordion-body">
-                        <!-- Group 1: Thermostat Specific Presets -->
-                        <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.08)); border:1px solid var(--divider-color, rgba(255, 255, 255, 0.08)); border-radius:12px; padding:10px 12px; margin-bottom:10px;">
+                        <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.08)); border:1px solid var(--divider-color, rgba(128, 128, 128, 0.14)); border-radius:12px; padding:10px 12px; margin-bottom:10px;">
                           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                             <div style="font-size:0.78rem; font-weight:700; color:var(--primary-text-color); display:flex; align-items:center; gap:6px;">
-                              <ha-icon icon="mdi:home-thermometer" style="--mdc-icon-size:16px; color:var(--info-color, #38bdf8);"></ha-icon>
+                              <ha-icon icon="mdi:home-thermometer" style="--mdc-icon-size:16px; color:var(--info-color, #0284c7);"></ha-icon>
                               <span>${unitTitle.split('&')[0].trim()} Specific Presets</span>
                             </div>
-                            <span style="font-size:0.65rem; font-weight:600; padding:2px 6px; border-radius:6px; background:rgba(56,189,248,0.15); color:#38bdf8;">Unit Specific</span>
+                            <span style="font-size:0.65rem; font-weight:600; padding:2px 6px; border-radius:6px; background:rgba(56,189,248,0.15); color:#0284c7;">Unit Specific</span>
                           </div>
 
-                          ${this._renderPresetSetpointRow("Home Profile", `input_number.hvac_preset_${unitKey}_home_heat`, `input_number.hvac_preset_${unitKey}_home_cool`)}
-                          ${this._renderPresetSetpointRow("Sleep Profile", `input_number.hvac_preset_${unitKey}_sleep_heat`, `input_number.hvac_preset_${unitKey}_sleep_cool`)}
-                          ${this._renderPresetSetpointRow("Alt Sleep Profile", `input_number.hvac_preset_${unitKey}_alt_sleep_heat`, `input_number.hvac_preset_${unitKey}_alt_sleep_cool`)}
+                          ${this._renderPresetSetpointRow("Home Profile", `input_number.hvac_preset_${zone}_home_heat`, `input_number.hvac_preset_${zone}_home_cool`)}
+                          ${this._renderPresetSetpointRow("Sleep Profile", `input_number.hvac_preset_${zone}_sleep_heat`, `input_number.hvac_preset_${zone}_sleep_cool`)}
+                          ${this._renderPresetSetpointRow("Alt Sleep Profile", `input_number.hvac_preset_${zone}_alt_sleep_heat`, `input_number.hvac_preset_${zone}_alt_sleep_cool`)}
                         </div>
 
-                        <!-- Group 2: Global System Presets -->
-                        <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.08)); border:1px solid var(--divider-color, rgba(255, 255, 255, 0.08)); border-radius:12px; padding:10px 12px;">
+                        <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.08)); border:1px solid var(--divider-color, rgba(128, 128, 128, 0.14)); border-radius:12px; padding:10px 12px;">
                           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                             <div style="font-size:0.78rem; font-weight:700; color:var(--primary-text-color); display:flex; align-items:center; gap:6px;">
                               <ha-icon icon="mdi:earth" style="--mdc-icon-size:16px; color:#3b82f6;"></ha-icon>
                               <span>Global System Presets</span>
                             </div>
-                            <span style="font-size:0.65rem; font-weight:600; padding:2px 6px; border-radius:6px; background:rgba(59,130,246,0.15); color:#60a5fa;">All Thermostats</span>
+                            <span style="font-size:0.65rem; font-weight:600; padding:2px 6px; border-radius:6px; background:rgba(59,130,246,0.15); color:#3b82f6;">All Thermostats</span>
                           </div>
 
                           ${this._renderPresetSetpointRow("Away Mode", "input_number.hvac_preset_away_heat", "input_number.hvac_preset_away_cool")}
@@ -2224,14 +3040,12 @@ class PassableHvacCard extends LitElement {
                           : ""}
 
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                          <!-- HEAT COLUMN -->
-                          <div style="background:var(--card-background-color, rgba(128, 128, 128, 0.05)); border:1px solid var(--divider-color, rgba(255, 255, 255, 0.08)); border-radius:14px; padding:10px; display:flex; flex-direction:column; gap:8px;">
+                          <div style="background:var(--card-background-color, rgba(128, 128, 128, 0.05)); border:1px solid var(--divider-color, rgba(128, 128, 128, 0.14)); border-radius:14px; padding:10px; display:flex; flex-direction:column; gap:8px;">
                             <div style="display:flex; align-items:center; gap:6px; font-weight:700; font-size:0.9rem; color:#ea580c;">
                               <ha-icon icon="mdi:fire" style="--mdc-icon-size:16px;"></ha-icon>
                               <span>Heat</span>
                             </div>
 
-                            <!-- Heat Threshold Box -->
                             <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.12)); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
                               <div style="display:flex; align-items:center; gap:6px; font-size:0.75rem; font-weight:600; color:var(--primary-text-color);">
                                 <ha-icon icon="mdi:fire" style="--mdc-icon-size:14px; color:#ea580c;"></ha-icon>
@@ -2244,7 +3058,6 @@ class PassableHvacCard extends LitElement {
                               </div>
                             </div>
 
-                            <!-- Heat Amount Box -->
                             <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.12)); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
                               <div style="display:flex; align-items:center; gap:6px; font-size:0.75rem; font-weight:600; color:var(--primary-text-color);">
                                 <ha-icon icon="mdi:fire" style="--mdc-icon-size:14px; color:#ea580c;"></ha-icon>
@@ -2258,14 +3071,12 @@ class PassableHvacCard extends LitElement {
                             </div>
                           </div>
 
-                          <!-- COOL COLUMN -->
-                          <div style="background:var(--card-background-color, rgba(128, 128, 128, 0.05)); border:1px solid var(--divider-color, rgba(255, 255, 255, 0.08)); border-radius:14px; padding:10px; display:flex; flex-direction:column; gap:8px;">
+                          <div style="background:var(--card-background-color, rgba(128, 128, 128, 0.05)); border:1px solid var(--divider-color, rgba(128, 128, 128, 0.14)); border-radius:14px; padding:10px; display:flex; flex-direction:column; gap:8px;">
                             <div style="display:flex; align-items:center; gap:6px; font-weight:700; font-size:0.9rem; color:#0284c7;">
                               <ha-icon icon="mdi:snowflake" style="--mdc-icon-size:16px;"></ha-icon>
                               <span>Cool</span>
                             </div>
 
-                            <!-- Cool Threshold Box -->
                             <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.12)); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
                               <div style="display:flex; align-items:center; gap:6px; font-size:0.75rem; font-weight:600; color:var(--primary-text-color);">
                                 <ha-icon icon="mdi:snowflake" style="--mdc-icon-size:14px; color:#0284c7;"></ha-icon>
@@ -2278,7 +3089,6 @@ class PassableHvacCard extends LitElement {
                               </div>
                             </div>
 
-                            <!-- Cool Amount Box -->
                             <div style="background:var(--secondary-background-color, rgba(128, 128, 128, 0.12)); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:4px;">
                               <div style="display:flex; align-items:center; gap:6px; font-size:0.75rem; font-weight:600; color:var(--primary-text-color);">
                                 <ha-icon icon="mdi:snowflake" style="--mdc-icon-size:14px; color:#0284c7;"></ha-icon>
@@ -2298,16 +3108,39 @@ class PassableHvacCard extends LitElement {
                 `
               : activeTab === "stats"
               ? html`
-                  <!-- TAB 2: FAN CIRCULATION & 10-DAY RUNTIME ANALYTICS -->
+                  <!-- TAB 2: STATS, POWER & FAN CIRCULATION -->
+                  <div class="hvac-kpi-grid">
+                    <div class="hvac-kpi-card">
+                      <span class="kpi-label">TODAY RUNTIME</span>
+                      <span class="kpi-val">${(liveHeatToday > 0 ? `${liveHeatToday}h H` : (liveCoolToday > 0 ? `${liveCoolToday}h C` : "0.0h"))}</span>
+                      <span class="kpi-sub">${liveFanToday !== null ? `Fan ${liveFanToday}h` : `${liveHeatToday}h H • ${liveCoolToday}h C`}</span>
+                    </div>
+                    <div class="hvac-kpi-card">
+                      <span class="kpi-label">CYCLES & DRIFT</span>
+                      <span class="kpi-val">${liveCyclesPerHr !== null ? `${liveCyclesPerHr}/hr` : "--"}</span>
+                      <span class="kpi-sub">${zoneClimate.equipmentRunning ? zoneClimate.equipmentRunning : ((zoneRateObj && !isNaN(parseFloat(zoneRateObj.state))) ? `Drift ${parseFloat(zoneRateObj.state).toFixed(2)}°/h` : "Idle")}</span>
+                    </div>
+                    <div class="hvac-kpi-card clickable" @click=${() => zonePower.entityIds?.[0] && this._showMoreInfo(zonePower.entityIds[0])}>
+                      <span class="kpi-label">SPAN ZONE DRAW</span>
+                      <span class="kpi-val ${zonePower.totalW > 300 ? 'active' : ''}">${zonePower.formatted || "--"}</span>
+                      <span class="kpi-sub">AH ${zonePower.airHandlerW != null ? Math.round(zonePower.airHandlerW) : "--"}W • Cond ${zonePower.condenserW != null ? Math.round(zonePower.condenserW) : "--"}W</span>
+                    </div>
+                    <div class="hvac-kpi-card">
+                      <span class="kpi-label">FAN RECIRC</span>
+                      <span class="kpi-val">${fanMinVal !== null ? `${fanMinVal}m/h` : (fanCircActiveObj?.state === "on" ? "Active" : "Standby")}</span>
+                      <span class="kpi-sub">${fanCircActiveObj?.state === "on" ? "Recirculating" : "Minimum Runtime"}</span>
+                    </div>
+                  </div>
+
+                  <!-- FAN RECIRCULATION & ADVISOR ACTIONS -->
                   <div class="passable-section-card" style="background:rgba(14,165,233,0.08); border-color:rgba(14,165,233,0.25);">
                     <div class="passable-section-header" style="margin-bottom:8px;">
-                      <div class="passable-section-title" style="color:var(--info-color, #38bdf8);">
+                      <div class="passable-section-title" style="color:var(--info-color, #0284c7);">
                         <ha-icon icon="mdi:fan-clock" style="--mdc-icon-size:18px;"></ha-icon>
                         <span>FAN RECIRCULATION CONTROL</span>
                       </div>
                     </div>
 
-                    <!-- Dedicated Fan Circulation Algorithm Toggle -->
                     <div class="control-row" style="margin-bottom:8px;">
                       <div class="control-label-group">
                         <ha-icon icon="mdi:recycle-variant" style="color:var(--info-color, #0284c7);"></ha-icon>
@@ -2320,17 +3153,17 @@ class PassableHvacCard extends LitElement {
                       ></ha-switch>
                     </div>
 
-                    ${fanCircObj && fanCircObj.state && fanCircObj.state !== "unavailable"
+                    ${fanMinVal !== null
                       ? html`
                           <div class="control-row">
                             <div class="control-label-group">
                               <ha-icon icon="mdi:timer-sand"></ha-icon>
-                              <span class="control-label">Circulation Target (Min/Hr)</span>
+                              <span class="control-label">Min Fan Runtime (Min/Hr)</span>
                             </div>
                             <div class="step-controller-pill">
-                              <button class="pill-btn" @click=${() => this._adjustNumberEntity(fanCircId, -5)}>-5m</button>
-                              <span class="pill-value">${fanCircObj.state} m/h</span>
-                              <button class="pill-btn" @click=${() => this._adjustNumberEntity(fanCircId, 5)}>+5m</button>
+                              <button class="pill-btn" @click=${() => this._adjustFanMinOnTime(companionId, -5, fanCircId)}>-5m</button>
+                              <span class="pill-value">${fanMinVal} m/h</span>
+                              <button class="pill-btn" @click=${() => this._adjustFanMinOnTime(companionId, 5, fanCircId)}>+5m</button>
                             </div>
                           </div>
                         `
@@ -2338,12 +3171,12 @@ class PassableHvacCard extends LitElement {
                   </div>
 
                   <!-- 10-DAY COMBINED RUNTIME & TODAY 24H TIMELINE PLOT -->
-                  <div class="passable-section-card" style="padding:12px; background:rgba(0,0,0,0.35); min-height:290px; box-sizing:border-box;">
+                  <div class="passable-section-card chart-analytics-card">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; gap:8px; flex-wrap:wrap;">
                       <div style="font-weight:800; font-size:0.85rem; letter-spacing:0.03em; text-transform:uppercase; color:var(--primary-text-color);">
                         HVAC Runtime & History (${unitTitle.split('&')[0].trim()})
                       </div>
-                      <div style="display:flex; gap:4px; background:rgba(0,0,0,0.4); padding:3px; border-radius:10px;">
+                      <div class="chart-mode-toggle-group">
                         <button
                           class="hvac-tab-btn ${graphMode === 'multiday' ? 'active' : ''}"
                           style="padding:4px 10px; font-size:0.72rem; white-space:nowrap;"
@@ -2365,10 +3198,9 @@ class PassableHvacCard extends LitElement {
 
                     ${graphMode === 'timeline'
                       ? html`
-                          <!-- Resolution Selector (5m, 15m, 30m, 1h) -->
                           <div style="display:flex; justify-content:flex-end; align-items:center; gap:4px; margin-bottom:8px;">
                             <span style="font-size:0.65rem; color:var(--secondary-text-color); font-weight:700; margin-right:2px;">Res:</span>
-                            <div style="display:flex; gap:3px; background:rgba(0,0,0,0.4); padding:3px; border-radius:10px;">
+                            <div class="chart-mode-toggle-group" style="padding:3px;">
                               ${[5, 15, 30, 60].map(
                                 (r) => html`
                                   <button
@@ -2391,54 +3223,50 @@ class PassableHvacCard extends LitElement {
 
                     ${graphMode === 'multiday'
                       ? html`
-                          <!-- MODE A: 10-DAY MULTI-DAY BAR CHART (WITH PASSABLE STAT BLOCKS & INVERTED HEAT BARS) -->
                           <div class="passable-stat-grid">
                             <div class="passable-stat-block">
                               <span class="stat-block-label">HEATING (${activeDay.dayLabel})</span>
-                              <span class="stat-block-val" style="color:#fb923c;">${activeDay.heat}<small>h</small></span>
+                              <span class="stat-block-val" style="color:#ea580c;">${activeDay.heat}<small>h</small></span>
                             </div>
                             <div class="passable-stat-block">
                               <span class="stat-block-label">COOLING (${activeDay.dayLabel})</span>
-                              <span class="stat-block-val" style="color:#38bdf8;">${activeDay.cool}<small>h</small></span>
+                              <span class="stat-block-val" style="color:#0284c7;">${activeDay.cool}<small>h</small></span>
                             </div>
                             <div class="passable-stat-block">
                               <span class="stat-block-label">AVG OUTDOOR</span>
-                              <span class="stat-block-val" style="color:#ffffff;">${activeDay.avgTemp}<small>°F</small></span>
+                              <span class="stat-block-val" style="color:var(--primary-text-color);">${activeDay.avgTemp}<small>°F</small></span>
                             </div>
                           </div>
 
                           ${isHeatingSeason
-                            ? html`<div style="font-size:0.68rem; color:var(--secondary-text-color); text-align:center; margin-bottom:4px; opacity:0.85;">
-                                <ha-icon icon="mdi:arrow-down-bold-circle-outline" style="--mdc-icon-size:12px; color:#fb923c; vertical-align:middle;"></ha-icon>
+                            ? html`<div style="font-size:0.68rem; color:var(--secondary-text-color); text-align:center; margin-bottom:4px;">
+                                <ha-icon icon="mdi:arrow-down-bold-circle-outline" style="--mdc-icon-size:12px; color:#ea580c; vertical-align:middle;"></ha-icon>
                                 Heating bars grow downward from 0.0h to align with colder outdoor temperatures
                               </div>`
                             : ""}
 
-                          <!-- Combined Bar + Curve Line SVG Canvas -->
                           <div style="position:relative; width:100%; aspect-ratio: 1.75 / 1; overflow:visible;">
                             <svg viewBox="0 0 340 195" style="width:100%; height:100%; overflow:visible;">
-                              <!-- Horizontal Grid Lines & Y-Axis Labels -->
-                              <line x1="30" y1="20" x2="310" y2="20" stroke="${isHeatingSeason ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.15)'}" stroke-dasharray="${isHeatingSeason ? 'none' : '3 3'}"/>
-                              <text x="5" y="24" fill="#a1a1aa" font-size="10" font-weight="600">${runtimeYLabels.top}</text>
-                              <text x="315" y="24" fill="#a1a1aa" font-size="10" font-weight="600">${barYGridLabels.top}</text>
+                              <line x1="30" y1="20" x2="310" y2="20" stroke="${isHeatingSeason ? 'var(--secondary-text-color, rgba(148,163,184,0.45))' : 'var(--divider-color, rgba(148,163,184,0.25))'}" stroke-dasharray="${isHeatingSeason ? 'none' : '3 3'}"/>
+                              <text x="5" y="24" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${runtimeYLabels.top}</text>
+                              <text x="315" y="24" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${barYGridLabels.top}</text>
 
-                              <line x1="30" y1="55" x2="310" y2="55" stroke="rgba(255,255,255,0.12)" stroke-dasharray="3 3"/>
-                              <text x="5" y="59" fill="#a1a1aa" font-size="10" font-weight="600">${runtimeYLabels.midHigh}</text>
-                              <text x="315" y="59" fill="#a1a1aa" font-size="10" font-weight="600">${barYGridLabels.midHigh}</text>
+                              <line x1="30" y1="55" x2="310" y2="55" stroke="var(--divider-color, rgba(148,163,184,0.22))" stroke-dasharray="3 3"/>
+                              <text x="5" y="59" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${runtimeYLabels.midHigh}</text>
+                              <text x="315" y="59" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${barYGridLabels.midHigh}</text>
 
-                              <line x1="30" y1="90" x2="310" y2="90" stroke="rgba(255,255,255,0.12)" stroke-dasharray="3 3"/>
-                              <text x="5" y="94" fill="#a1a1aa" font-size="10" font-weight="600">${runtimeYLabels.mid}</text>
-                              <text x="315" y="94" fill="#a1a1aa" font-size="10" font-weight="600">${barYGridLabels.mid}</text>
+                              <line x1="30" y1="90" x2="310" y2="90" stroke="var(--divider-color, rgba(148,163,184,0.22))" stroke-dasharray="3 3"/>
+                              <text x="5" y="94" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${runtimeYLabels.mid}</text>
+                              <text x="315" y="94" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${barYGridLabels.mid}</text>
 
-                              <line x1="30" y1="125" x2="310" y2="125" stroke="rgba(255,255,255,0.12)" stroke-dasharray="3 3"/>
-                              <text x="5" y="129" fill="#a1a1aa" font-size="10" font-weight="600">${runtimeYLabels.midLow}</text>
-                              <text x="315" y="129" fill="#a1a1aa" font-size="10" font-weight="600">${barYGridLabels.midLow}</text>
+                              <line x1="30" y1="125" x2="310" y2="125" stroke="var(--divider-color, rgba(148,163,184,0.22))" stroke-dasharray="3 3"/>
+                              <text x="5" y="129" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${runtimeYLabels.midLow}</text>
+                              <text x="315" y="129" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${barYGridLabels.midLow}</text>
 
-                              <line x1="30" y1="160" x2="310" y2="160" stroke="${isHeatingSeason ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.3)'}" stroke-dasharray="${isHeatingSeason ? '3 3' : 'none'}"/>
-                              <text x="5" y="164" fill="#a1a1aa" font-size="10" font-weight="600">${runtimeYLabels.bottom}</text>
-                              <text x="315" y="164" fill="#a1a1aa" font-size="10" font-weight="600">${barYGridLabels.bottom}</text>
+                              <line x1="30" y1="160" x2="310" y2="160" stroke="${isHeatingSeason ? 'var(--divider-color, rgba(148,163,184,0.25))' : 'var(--secondary-text-color, rgba(148,163,184,0.45))'}" stroke-dasharray="${isHeatingSeason ? '3 3' : 'none'}"/>
+                              <text x="5" y="164" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${runtimeYLabels.bottom}</text>
+                              <text x="315" y="164" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${barYGridLabels.bottom}</text>
 
-                              <!-- 10 Daily Cooling/Heating Bars in SVG Namespace with Click Event -->
                               ${historyData.map((d, i) => {
                                 const runtimeVal = isHeatingSeason ? parseFloat(d.heat) : parseFloat(d.cool);
                                 const rawHeight = (runtimeVal / maxGridHours) * 140;
@@ -2453,7 +3281,7 @@ class PassableHvacCard extends LitElement {
                                     rx="3"
                                     fill="${isHeatingSeason ? '#ea580c' : '#2563eb'}"
                                     fill-opacity="${runtimeVal > 0 ? 0.9 : 0.35}"
-                                    stroke="${selectedDayIdx === i ? '#ffffff' : '#38bdf8'}"
+                                    stroke="${selectedDayIdx === i ? 'var(--primary-text-color, #38bdf8)' : '#38bdf8'}"
                                     stroke-width="${selectedDayIdx === i ? 2.5 : (runtimeVal > 0 ? 1.2 : 0.6)}"
                                     style="cursor:pointer;"
                                     @click=${() => this._selectHvacHistoryDay(i)}
@@ -2461,28 +3289,25 @@ class PassableHvacCard extends LitElement {
                                 `;
                               })}
 
-                              <!-- Outdoor Temperature Curved Overlay Line -->
                               <path
                                 d="${multiDayPathString}"
                                 fill="none"
-                                stroke="#ffffff"
+                                stroke="var(--primary-text-color, #94a3b8)"
                                 stroke-width="2.5"
                                 stroke-linecap="round"
                               />
 
-                              <!-- Dynamic Selected Day Point Tooltip Badge -->
-                              <circle cx="${activeDay.cx}" cy="${activeDay.cy}" r="5" fill="#ffffff" stroke="${isHeatingSeason ? '#ea580c' : '#2563eb'}" stroke-width="2.5"/>
+                              <circle cx="${activeDay.cx}" cy="${activeDay.cy}" r="5" fill="var(--card-background-color, #ffffff)" stroke="${isHeatingSeason ? '#ea580c' : '#2563eb'}" stroke-width="2.5"/>
                               <g transform="translate(${Math.max(10, Math.min(290, activeDay.cx - 18))}, ${Math.max(8, activeDay.cy - 24)})">
-                                <rect x="0" y="0" width="36" height="16" rx="4" fill="#ffffff"/>
-                                <text x="18" y="11" fill="#000000" font-size="9" font-weight="800" text-anchor="middle">${activeDay.avgTemp}</text>
+                                <rect x="0" y="0" width="36" height="16" rx="4" fill="#0f172a" stroke="rgba(148,163,184,0.45)" stroke-width="0.8"/>
+                                <text x="18" y="11" fill="#f8fafc" font-size="9" font-weight="800" text-anchor="middle">${activeDay.avgTemp}</text>
                               </g>
 
-                              <!-- X-Axis Dynamic Clickable Dates -->
-                              ${[0, 2, 4, 6, 8].map(i => historyData[i] ? svg`
+                              ${[0, 2, 4, 6, 8].map((i) => historyData[i] ? svg`
                                 <text
                                   x="${historyData[i].cx}"
                                   y="176"
-                                  fill="${selectedDayIdx === i ? '#ffffff' : '#a1a1aa'}"
+                                  fill="${selectedDayIdx === i ? 'var(--primary-text-color, #38bdf8)' : 'var(--secondary-text-color, #94a3b8)'}"
                                   font-size="9"
                                   font-weight="${selectedDayIdx === i ? '700' : '400'}"
                                   text-anchor="middle"
@@ -2496,23 +3321,21 @@ class PassableHvacCard extends LitElement {
                           </div>
                         `
                       : html`
-                          <!-- MODE B: TODAY 24H HIGH-RESOLUTION INTERACTIVE TIMELINE PLOT -->
                           <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:8px; font-family:sans-serif;">
                             <div>
-                              <div style="font-size:1.4rem; font-weight:800; color:${isHeatingSeason ? '#ea580c' : '#3b82f6'}; line-height:1;">
+                              <div style="font-size:1.4rem; font-weight:800; color:${isHeatingSeason ? '#ea580c' : '#0284c7'}; line-height:1;">
                                 ${isHeatingSeason ? liveHeatToday : liveCoolToday}<span style="font-size:0.9rem; font-weight:600;">h</span>
                               </div>
                               <div style="font-size:0.65rem; color:var(--secondary-text-color);">Today ${isHeatingSeason ? 'Heating' : 'Cooling'} (${activeHourData.timeLabel})</div>
                             </div>
                             <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; font-size:0.65rem; font-weight:600;">
-                              <span style="color:#ffffff; display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:8px; height:2px; background:#ffffff;"></span> Outdoor (${liveOutdoorTempStr}°F)</span>
-                              <span style="color:#eab308; display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:8px; height:2px; background:#eab308;"></span> Setpoint</span>
-                              <span style="color:#38bdf8; display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:8px; height:2px; background:#38bdf8;"></span> Indoor</span>
+                              <span style="color:var(--primary-text-color); display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:8px; height:2px; background:var(--primary-text-color);"></span> Outdoor (${liveOutdoorTempStr}°F)</span>
+                              <span style="color:#ca8a04; display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:8px; height:2px; background:#eab308;"></span> Setpoint</span>
+                              <span style="color:#0284c7; display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:8px; height:2px; background:#38bdf8;"></span> Indoor</span>
                               <span style="color:${isHeatingSeason ? '#ea580c' : '#0284c7'}; display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:6px; height:6px; background:${isHeatingSeason ? 'rgba(234,88,12,0.5)' : 'rgba(2,132,199,0.5)'}; border-radius:2px;"></span> Active</span>
                             </div>
                           </div>
 
-                          <!-- 24-Hour Timeline Plot SVG Canvas -->
                           <div style="position:relative; width:100%; aspect-ratio: 1.75 / 1; overflow:visible;">
                             <svg
                               viewBox="0 0 340 178"
@@ -2521,79 +3344,56 @@ class PassableHvacCard extends LitElement {
                               @mousemove=${(e) => this._handleGraphDrag(e, timelineData)}
                               @touchmove=${(e) => this._handleGraphTouchDrag(e, timelineData)}
                             >
-                              <!-- Horizontal Grid Lines & Dynamic Autofit Y-Axis Labels (°F) -->
-                              <line x1="30" y1="20" x2="310" y2="20" stroke="rgba(255,255,255,0.12)" stroke-dasharray="3 3"/>
-                              <text x="5" y="24" fill="#a1a1aa" font-size="10" font-weight="600">${yGridLabels.top}</text>
+                              <line x1="30" y1="20" x2="310" y2="20" stroke="var(--divider-color, rgba(148,163,184,0.22))" stroke-dasharray="3 3"/>
+                              <text x="5" y="24" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${yGridLabels.top}</text>
 
-                              <line x1="30" y1="50" x2="310" y2="50" stroke="rgba(255,255,255,0.12)" stroke-dasharray="3 3"/>
-                              <text x="5" y="54" fill="#a1a1aa" font-size="10" font-weight="600">${yGridLabels.midHigh}</text>
+                              <line x1="30" y1="50" x2="310" y2="50" stroke="var(--divider-color, rgba(148,163,184,0.22))" stroke-dasharray="3 3"/>
+                              <text x="5" y="54" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${yGridLabels.midHigh}</text>
 
-                              <line x1="30" y1="80" x2="310" y2="80" stroke="rgba(255,255,255,0.12)" stroke-dasharray="3 3"/>
-                              <text x="5" y="84" fill="#a1a1aa" font-size="10" font-weight="600">${yGridLabels.mid}</text>
+                              <line x1="30" y1="80" x2="310" y2="80" stroke="var(--divider-color, rgba(148,163,184,0.22))" stroke-dasharray="3 3"/>
+                              <text x="5" y="84" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${yGridLabels.mid}</text>
 
-                              <line x1="30" y1="110" x2="310" y2="110" stroke="rgba(255,255,255,0.12)" stroke-dasharray="3 3"/>
-                              <text x="5" y="114" fill="#a1a1aa" font-size="10" font-weight="600">${yGridLabels.midLow}</text>
+                              <line x1="30" y1="110" x2="310" y2="110" stroke="var(--divider-color, rgba(148,163,184,0.22))" stroke-dasharray="3 3"/>
+                              <text x="5" y="114" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${yGridLabels.midLow}</text>
 
-                              <line x1="30" y1="140" x2="310" y2="140" stroke="rgba(255,255,255,0.3)"/>
-                              <text x="5" y="144" fill="#a1a1aa" font-size="10" font-weight="600">${yGridLabels.bottom}</text>
+                              <line x1="30" y1="140" x2="310" y2="140" stroke="var(--secondary-text-color, rgba(148,163,184,0.45))"/>
+                              <text x="5" y="144" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${yGridLabels.bottom}</text>
 
-                              <!-- Shaded Active HVAC Compressor Bands (Real HA History Data) -->
                               <path
                                 d="${activeBandsPath}"
                                 fill="${isHeatingSeason ? 'rgba(249,115,22,0.30)' : 'rgba(56,189,248,0.30)'}"
                               />
 
-                              <!-- Vertical Hairline Indicator Line for Selected Hour -->
-                              <line x1="${activeHourData.cx}" y1="20" x2="${activeHourData.cx}" y2="140" stroke="rgba(255,255,255,0.4)" stroke-dasharray="2 2"/>
+                              <line x1="${activeHourData.cx}" y1="20" x2="${activeHourData.cx}" y2="140" stroke="var(--secondary-text-color, rgba(148,163,184,0.5))" stroke-dasharray="2 2"/>
 
-                              <!-- White Dashed Line: Outdoor Temperature Curve -->
                               <path
                                 d="${outdoorPathString}"
                                 fill="none"
-                                stroke="#ffffff"
+                                stroke="var(--primary-text-color, #94a3b8)"
                                 stroke-width="2"
                                 stroke-dasharray="4 3"
                                 stroke-linecap="round"
                               />
 
-                              <!-- Yellow/Orange Step Line: Target Setpoint -->
-                              <path
-                                d="${setpointPathString}"
-                                fill="none"
-                                stroke="#eab308"
-                                stroke-width="2.2"
-                              />
+                              <path d="${setpointPathString}" fill="none" stroke="#eab308" stroke-width="2.2"/>
+                              <path d="${indoorPathString}" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round"/>
 
-                              <!-- Blue Line: Indoor Temperature Curve -->
-                              <path
-                                d="${indoorPathString}"
-                                fill="none"
-                                stroke="#38bdf8"
-                                stroke-width="2.5"
-                                stroke-linecap="round"
-                              />
+                              <circle cx="${activeHourData.cx}" cy="${activeHourData.outdoorY}" r="4" fill="var(--primary-text-color, #94a3b8)" stroke="var(--card-background-color, #ffffff)" stroke-width="1.5"/>
+                              <circle cx="${activeHourData.cx}" cy="${activeHourData.setpointY}" r="4" fill="#eab308" stroke="var(--card-background-color, #ffffff)" stroke-width="1.5"/>
+                              <circle cx="${activeHourData.cx}" cy="${activeHourData.indoorY}" r="5" fill="#38bdf8" stroke="var(--card-background-color, #ffffff)" stroke-width="2"/>
 
-                              <!-- Glowing Selection Point Markers for Active Chunk -->
-                              <circle cx="${activeHourData.cx}" cy="${activeHourData.outdoorY}" r="4" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
-                              <circle cx="${activeHourData.cx}" cy="${activeHourData.setpointY}" r="4" fill="#eab308" stroke="#000000" stroke-width="1.5"/>
-                              <circle cx="${activeHourData.cx}" cy="${activeHourData.indoorY}" r="5" fill="#38bdf8" stroke="#ffffff" stroke-width="2"/>
-
-                              <!-- Dynamic Smart Non-Blocking Tooltip Annotation Badge -->
                               <g transform="translate(${ttX}, ${ttY})">
-                                <rect x="0" y="0" width="${activeRunRangeStr ? 144 : 126}" height="${activeRunRangeStr ? 52 : 44}" rx="6" fill="rgba(15,23,42,0.95)" stroke="rgba(255,255,255,0.3)" stroke-width="1.2"/>
-                                <text x="7" y="13" fill="#ffffff" font-size="9" font-weight="700">${activeHourData.timeLabel}</text>
+                                <rect x="0" y="0" width="${activeRunRangeStr ? 144 : 126}" height="${activeRunRangeStr ? 52 : 44}" rx="6" fill="rgba(15,23,42,0.95)" stroke="rgba(148,163,184,0.4)" stroke-width="1.2"/>
+                                <text x="7" y="13" fill="#f8fafc" font-size="9" font-weight="700">${activeHourData.timeLabel}</text>
                                 <text x="${activeRunRangeStr ? 137 : 119}" y="13" fill="#38bdf8" font-size="9" font-weight="800" text-anchor="end">In: ${activeHourData.indoorTemp}°F</text>
-                                
-                                <text x="7" y="26" fill="${activeHourData.isActive ? (isHeatingSeason ? '#f97316' : '#38bdf8') : '#a1a1aa'}" font-size="8" font-weight="600">
+                                <text x="7" y="26" fill="${activeHourData.isActive ? (isHeatingSeason ? '#f97316' : '#38bdf8') : '#94a3b8'}" font-size="8" font-weight="600">
                                   ${activeHourData.isActive ? (isHeatingSeason ? 'Heating Active' : 'Cooling Active') : 'Idle'}
                                 </text>
                                 <text x="${activeRunRangeStr ? 137 : 119}" y="26" fill="#eab308" font-size="8.5" font-weight="800" text-anchor="end">Set: ${activeHourData.setpoint}°F</text>
-                                
-                                <text x="7" y="37" fill="#a1a1aa" font-size="8" font-weight="500">Out: ${activeHourData.outdoorTemp}°F</text>
+                                <text x="7" y="37" fill="#cbd5e1" font-size="8" font-weight="500">Out: ${activeHourData.outdoorTemp}°F</text>
                                 ${activeRunRangeStr ? svg`<text x="7" y="47" fill="#38bdf8" font-size="7.5" font-weight="700">Ran ${activeRunRangeStr}</text>` : ''}
                               </g>
 
-                              <!-- Interactive Resolution Touch Targets -->
                               ${timelineData.map(
                                 (pt) => svg`
                                   <rect
@@ -2609,13 +3409,12 @@ class PassableHvacCard extends LitElement {
                                 `
                               )}
 
-                              <!-- X-Axis Dynamic 24h Timestamps -->
                               ${(xLabels || []).map(
                                 (xl) => xl ? svg`
                                   <text
                                     x="${xl.cx}"
                                     y="162"
-                                    fill="${selectedChunkIdx === xl.idx ? '#ffffff' : '#a1a1aa'}"
+                                    fill="${selectedChunkIdx === xl.idx ? 'var(--primary-text-color, #38bdf8)' : 'var(--secondary-text-color, #94a3b8)'}"
                                     font-size="8.5"
                                     font-weight="${selectedChunkIdx === xl.idx ? '700' : '400'}"
                                     text-anchor="middle"
@@ -2630,103 +3429,77 @@ class PassableHvacCard extends LitElement {
                           </div>
                         `}
                   </div>
-
-                  ${hasSmartClimateAdvisor
-                    ? html`
-                        <!-- SMART CLIMATE ADVISOR & LEARNING TELEMETRY CARD -->
-                        <div class="passable-section-card">
-                          <div class="passable-section-header" style="margin-bottom:8px;">
-                            <div class="passable-section-title">
-                              <ha-icon icon="mdi:brain" style="--mdc-icon-size:18px; color:var(--primary-color);"></ha-icon>
-                              <span>SMART CLIMATE ADVISOR & LEARNING</span>
-                            </div>
-                            ${activeModelSource
-                              ? html`
-                                  <span
-                                    class="passable-count-pill"
-                                    style="${activeModelSource === 'InfluxDB MLR' ? 'background:rgba(34,197,94,0.18); color:#4ade80;' : 'background:rgba(56,189,248,0.18); color:#38bdf8;'}"
-                                  >
-                                    ${activeModelSource}
-                                  </span>
-                                `
-                              : ""}
-                          </div>
-
-                          <div class="passable-stat-grid" style="margin-bottom:6px;">
-                            <div class="passable-stat-block">
-                              <span class="stat-block-label">ZONE DRIFT RATE</span>
-                              <span class="stat-block-val" style="font-size:1.05rem; color:#38bdf8;">
-                                ${(zoneRateObj && zoneRateObj.state && !isNaN(parseFloat(zoneRateObj.state)))
-                                  ? `${parseFloat(zoneRateObj.state) >= 0 ? "+" : ""}${parseFloat(zoneRateObj.state).toFixed(2)}°/h`
-                                  : "--"}
-                              </span>
-                            </div>
-                            <div class="passable-stat-block">
-                              <span class="stat-block-label">LEARNED SWING / COAST</span>
-                              <span class="stat-block-val" style="font-size:0.95rem; color:#fbbf24;">
-                                ${hasLearnedSwingCoast
-                                  ? `±${parseFloat(learnedSwing).toFixed(1)}° / ${learnedCoastMag !== undefined && learnedCoastMag !== null && !isNaN(parseFloat(learnedCoastMag)) ? `${parseFloat(learnedCoastMag).toFixed(1)}°` : "--"}`
-                                  : "--"}
-                              </span>
-                            </div>
-                            <div class="passable-stat-block">
-                              <span class="stat-block-label">14D COMPLIANCE</span>
-                              <span class="stat-block-val" style="font-size:1.05rem; color:#4ade80;">
-                                ${(() => {
-                                  if (complianceSummary && typeof complianceSummary === "object" && complianceSummary.overall_compliance_pct !== undefined && complianceSummary.overall_compliance_pct !== null) {
-                                    return `${Math.round(parseFloat(complianceSummary.overall_compliance_pct))}%`;
-                                  }
-                                  if (typeof complianceSummary === "string") {
-                                    const m = complianceSummary.match(/\((\d+(?:\.\d+)?)%\)/);
-                                    if (m) return `${Math.round(parseFloat(m[1]))}%`;
-                                  }
-                                  return "N/A";
-                                })()}
-                              </span>
-                            </div>
-                          </div>
-
-                          ${advisorRecObj && advisorRecObj.state
-                            ? html`
-                                <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.74rem; color:var(--secondary-text-color); padding-top:4px; border-top:1px solid var(--divider-color, rgba(255,255,255,0.06));">
-                                  <span>Advisor Status: <strong style="color:var(--primary-text-color);">${advisorRecObj.state}</strong></span>
-                                  ${complianceSummary && complianceSummary.avg_response_lag_mins !== undefined && complianceSummary.avg_response_lag_mins !== null
-                                    ? html`<span>Avg Response: <strong>${Math.round(parseFloat(complianceSummary.avg_response_lag_mins))}m</strong></span>`
-                                    : ""}
-                                </div>
-                              `
-                            : ""}
-                        </div>
-                      `
-                    : ""}
                 `
+              : activeTab === "advisor"
+              ? this._renderAdvisorTabContent({
+                  unitKey,
+                  zone,
+                  unitTitle,
+                  advisorRecObj,
+                  zoneRateObj,
+                  activeModelSource,
+                  complianceSummary,
+                  hasLearnedSwingCoast,
+                  learnedSwing,
+                  learnedCoastMag,
+                  hasHeatPrediction,
+                  predictionMsgObj,
+                  profileObj,
+                  overrideObj,
+                })
               : html`
-                  <!-- TAB 3: AIR FILTER MAINTENANCE -->
+                  <!-- TAB 4: AIR FILTER MAINTENANCE -->
                   <div class="passable-section-card">
                     <div class="passable-section-header" style="margin-bottom:10px;">
                       <div class="passable-section-title">
                         <ha-icon icon="mdi:air-filter" style="--mdc-icon-size:18px; color:var(--primary-color);"></ha-icon>
                         <span>AIR FILTER LIFESPAN & SETTINGS</span>
                       </div>
+                      ${filterMetrics.percentRemaining !== null
+                        ? html`
+                            <span class="advisor-tone-badge ${filterMetrics.isExpired ? 'close' : (filterMetrics.isLow ? 'warn' : 'open')}">
+                              ${filterMetrics.percentRemaining}% Left
+                            </span>
+                          `
+                        : ""}
                     </div>
-                    
-                    <div class="control-row" style="margin-bottom:12px;">
+
+                    ${filterMetrics.percentRemaining !== null
+                      ? html`
+                          <div class="filter-progress-wrap">
+                            <div class="filter-progress-track">
+                              <div
+                                class="filter-progress-fill ${filterMetrics.isExpired ? 'danger' : (filterMetrics.isLow ? 'warn' : 'good')}"
+                                style="width:${Math.max(2, filterMetrics.percentRemaining)}%;"
+                              ></div>
+                            </div>
+                            <div class="filter-progress-meta">
+                              <span>${filterMetrics.usedHours}h used</span>
+                              <span>${filterMetrics.remHours !== null ? `${Math.round(filterMetrics.remHours * 10) / 10}h remaining` : `${filterMetrics.maxHours}h limit`}</span>
+                            </div>
+                          </div>
+                        `
+                      : ""}
+
+                    <div class="control-row" style="margin-bottom:10px;">
                       <div class="control-label-group">
                         <ha-icon icon="mdi:timer-outline"></ha-icon>
                         <span class="control-label">Filter Life Remaining</span>
                       </div>
-                      <span class="control-value" style="font-weight:700; color:var(--primary-color);">${(filterHours && filterHours.state !== "unavailable" && filterHours.state !== "unknown") ? filterHours.state : 0} hrs</span>
+                      <span class="control-value" style="font-weight:700; color:var(--primary-color);">
+                        ${filterMetrics.remHours !== null ? `${Math.round(filterMetrics.remHours * 10) / 10} hrs` : `${filterMetrics.maxHours} hrs`}
+                      </span>
                     </div>
 
-                    ${(filterHours && filterHours.attributes && (filterHours.attributes.last_replaced || filterHours.attributes[`last_changed_${unitKey}`]))
+                    ${filterMetrics.lastResetRaw
                       ? html`
-                          <div class="control-row" style="margin-bottom:12px;">
+                          <div class="control-row" style="margin-bottom:10px;">
                             <div class="control-label-group">
                               <ha-icon icon="mdi:calendar-check-outline"></ha-icon>
                               <span class="control-label">Last Replaced</span>
                             </div>
                             <span class="control-value" style="font-size:0.85rem; color:var(--secondary-text-color);">
-                              ${filterHours.attributes.last_replaced || filterHours.attributes[`last_changed_${unitKey}`]}
+                              ${this._formatShortDate(filterMetrics.lastResetRaw)}
                             </span>
                           </div>
                         `
@@ -2738,9 +3511,9 @@ class PassableHvacCard extends LitElement {
                         <span class="control-label">Max Recommended Lifespan</span>
                       </div>
                       <div class="step-controller-pill">
-                        <button class="pill-btn" @click=${() => this._adjustFilterLifeAndHours(filterHoursId, filterLifeId, -25)}>-25h</button>
-                        <span class="pill-value">${(filterLife && filterLife.state !== "unavailable" && filterLife.state !== "unknown" && !isNaN(parseFloat(filterLife.state))) ? Math.round(parseFloat(filterLife.state)) : ((filterHours && filterHours.attributes && filterHours.attributes.capacity_hours !== undefined) ? Math.round(parseFloat(filterHours.attributes.capacity_hours)) : 300)} hrs</span>
-                        <button class="pill-btn" @click=${() => this._adjustFilterLifeAndHours(filterHoursId, filterLifeId, 25)}>+25h</button>
+                        <button class="pill-btn" @click=${() => this._adjustFilterLifeAndHours(filterMetrics.hoursId, filterMetrics.lifeId, -25)}>-25h</button>
+                        <span class="pill-value">${Math.round(filterMetrics.maxHours)} hrs</span>
+                        <button class="pill-btn" @click=${() => this._adjustFilterLifeAndHours(filterMetrics.hoursId, filterMetrics.lifeId, 25)}>+25h</button>
                       </div>
                     </div>
                   </div>
@@ -2769,7 +3542,7 @@ class PassableHvacCard extends LitElement {
                     </div>
                   </div>
 
-                  <button class="recirc-button active" style="width:100%; margin-top:16px;" @click=${() => this._resetHvacFilter(unitKey, filterHoursId, filterLifeId)}>
+                  <button class="recirc-button active" style="width:100%; margin-top:16px;" @click=${() => this._resetHvacFilter(unitKey, filterMetrics.hoursId, filterMetrics.lifeId)}>
                     <ha-icon icon="mdi:refresh"></ha-icon>
                     <span>RESET FILTER LIFE COUNTER</span>
                   </button>
@@ -2840,26 +3613,114 @@ class PassableHvacCard extends LitElement {
         padding-top: 0;
       }
 
-      /* PASSABLE DESIGN SYSTEM: HVAC ZONE CARD */
-      .hvac-grid { display: flex; flex-direction: column; gap: 8px; }
+      /* PASSABLE DESIGN SYSTEM: SMART ADVISOR STRIP & CONSOLIDATED HVAC ZONE CARD */
+      .hvac-summary-strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 5px 10px;
+        margin-bottom: 8px;
+        border-radius: 10px;
+        font-size: 0.74rem;
+        font-weight: 600;
+        background: var(--secondary-background-color, rgba(128, 128, 128, 0.10));
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.16));
+        cursor: pointer;
+        transition: all 0.2s ease;
+        min-height: 30px;
+        box-sizing: border-box;
+      }
+      .hvac-summary-strip:hover {
+        border-color: rgba(var(--rgb-primary-color, 3, 169, 244), 0.35);
+      }
+      .hvac-summary-strip.open {
+        background: rgba(34, 197, 94, 0.08);
+        border-color: rgba(34, 197, 94, 0.28);
+      }
+      .hvac-summary-strip.close {
+        background: rgba(245, 158, 11, 0.08);
+        border-color: rgba(245, 158, 11, 0.28);
+      }
+      .summary-strip-left {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+      }
+      .summary-strip-right {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-shrink: 0;
+        white-space: nowrap;
+      }
+      .summary-status-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background: #0284c7;
+      }
+      .summary-status-dot.open { background: #22c55e; box-shadow: 0 0 6px rgba(34, 197, 94, 0.55); }
+      .summary-status-dot.close { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.55); }
+      .summary-win-label {
+        font-weight: 700;
+        color: var(--primary-text-color);
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .summary-sep { opacity: 0.4; }
+      .summary-profile-pill,
+      .summary-metric {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        color: var(--secondary-text-color);
+        font-size: 0.72rem;
+      }
+      .summary-profile-pill ha-icon,
+      .summary-metric ha-icon {
+        --mdc-icon-size: 13px;
+      }
+      .summary-metric.power-active {
+        color: #d97706;
+        font-weight: 700;
+      }
+      .summary-alert-dot {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .summary-alert-dot ha-icon { --mdc-icon-size: 12px; }
+      .summary-alert-dot.heat { background: rgba(245, 158, 11, 0.2); color: #d97706; }
+      .summary-alert-dot.open { background: rgba(14, 165, 233, 0.2); color: #0284c7; }
+
+      .hvac-grid { display: flex; flex-direction: column; gap: 7px; }
       .hvac-unit-card {
-        background: var(--secondary-background-color, rgba(128,128,128,0.12));
+        background: var(--secondary-background-color, rgba(128,128,128,0.10));
         border-radius: 12px;
-        padding: 9px 11px;
+        padding: 8px 10px;
         display: flex;
         flex-direction: column;
-        gap: 6px;
-        border: 1px solid var(--divider-color, rgba(255,255,255,0.08));
+        gap: 5px;
+        border: 1px solid var(--divider-color, rgba(128,128,128,0.14));
         transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
         cursor: pointer;
       }
       .hvac-unit-card:hover {
-        background: var(--secondary-background-color, rgba(128,128,128,0.18));
+        background: var(--secondary-background-color, rgba(128,128,128,0.16));
         border-color: rgba(var(--rgb-primary-color, 3, 169, 244), 0.35);
-        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.14);
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.10);
       }
 
-      /* Zone Header: Icon + Title/Subtitle + Primary Readout */
+      /* Zone Header: Icon + 2-Line Title/Subtitle + Right Primary Readout */
       .hvac-zone-header {
         display: flex;
         align-items: center;
@@ -2887,7 +3748,7 @@ class PassableHvacCard extends LitElement {
         position: relative;
         background: rgba(128, 128, 128, 0.14);
         color: var(--secondary-text-color);
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.16));
         transition: all 0.25s ease;
       }
       .hvac-zone-icon-wrap ha-icon {
@@ -2895,35 +3756,35 @@ class PassableHvacCard extends LitElement {
       }
       .hvac-zone-icon-wrap.active-heat {
         background: rgba(234, 88, 12, 0.22);
-        color: #fb923c;
-        border-color: rgba(251, 146, 60, 0.45);
-        box-shadow: 0 0 12px rgba(234, 88, 12, 0.28);
+        color: #ea580c;
+        border-color: rgba(234, 88, 12, 0.45);
+        box-shadow: 0 0 10px rgba(234, 88, 12, 0.24);
       }
       .hvac-zone-icon-wrap.idle-heat {
         background: rgba(234, 88, 12, 0.12);
-        color: #fb923c;
-        border-color: rgba(251, 146, 60, 0.25);
+        color: #ea580c;
+        border-color: rgba(234, 88, 12, 0.25);
       }
       .hvac-zone-icon-wrap.active-cool {
         background: rgba(2, 132, 199, 0.22);
-        color: #38bdf8;
-        border-color: rgba(56, 189, 248, 0.45);
-        box-shadow: 0 0 12px rgba(2, 132, 199, 0.28);
+        color: #0284c7;
+        border-color: rgba(2, 132, 199, 0.45);
+        box-shadow: 0 0 10px rgba(2, 132, 199, 0.24);
       }
       .hvac-zone-icon-wrap.idle-cool {
         background: rgba(2, 132, 199, 0.12);
-        color: #38bdf8;
-        border-color: rgba(56, 189, 248, 0.25);
+        color: #0284c7;
+        border-color: rgba(2, 132, 199, 0.25);
       }
       .hvac-zone-icon-wrap.active-fan {
         background: rgba(22, 163, 74, 0.22);
-        color: #4ade80;
-        border-color: rgba(74, 222, 128, 0.45);
+        color: #16a34a;
+        border-color: rgba(22, 163, 74, 0.45);
       }
       .hvac-zone-icon-wrap.idle-auto {
         background: rgba(168, 85, 247, 0.15);
-        color: #c084fc;
-        border-color: rgba(192, 132, 252, 0.3);
+        color: #9333ea;
+        border-color: rgba(168, 85, 247, 0.3);
       }
 
       .hvac-zone-title-wrap {
@@ -2934,8 +3795,15 @@ class PassableHvacCard extends LitElement {
         flex: 1;
         overflow: hidden;
       }
+      .hvac-zone-title-row {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
+        overflow: hidden;
+      }
       .hvac-zone-title {
-        font-size: 0.92rem;
+        font-size: 0.90rem;
         font-weight: 700;
         color: var(--primary-text-color);
         white-space: nowrap;
@@ -2945,11 +3813,44 @@ class PassableHvacCard extends LitElement {
         margin: 0;
         line-height: 1.2;
       }
+      .zone-inline-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 0.63rem;
+        font-weight: 700;
+        line-height: 1.3;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .zone-inline-chip.info {
+        background: rgba(14, 165, 233, 0.16);
+        color: #0284c7;
+        border: 1px solid rgba(14, 165, 233, 0.28);
+      }
+      .zone-inline-chip.warning {
+        background: rgba(245, 158, 11, 0.16);
+        color: #d97706;
+        border: 1px solid rgba(245, 158, 11, 0.30);
+      }
+      .zone-inline-chip.danger {
+        background: rgba(239, 68, 68, 0.16);
+        color: #dc2626;
+        border: 1px solid rgba(239, 68, 68, 0.30);
+      }
+      .zone-inline-chip.neutral {
+        background: rgba(128, 128, 128, 0.16);
+        color: var(--secondary-text-color);
+        border: 1px solid rgba(128, 128, 128, 0.24);
+      }
+      .zone-inline-chip.clickable { cursor: pointer; }
+
       .hvac-zone-subtitle {
         display: flex;
         align-items: center;
         gap: 4px;
-        font-size: 0.74rem;
+        font-size: 0.72rem;
         font-weight: 600;
         color: var(--secondary-text-color);
         white-space: nowrap;
@@ -2971,30 +3872,46 @@ class PassableHvacCard extends LitElement {
         --mdc-icon-size: 13px;
         flex-shrink: 0;
       }
-      .hvac-mode-inline.active-heat { color: #fb923c; font-weight: 700; }
-      .hvac-mode-inline.idle-heat { color: #fdba74; }
-      .hvac-mode-inline.active-cool { color: #38bdf8; font-weight: 700; }
-      .hvac-mode-inline.idle-cool { color: #7dd3fc; }
-      .hvac-mode-inline.active-fan { color: #4ade80; font-weight: 700; }
-      .hvac-subtitle-dot { opacity: 0.4; flex-shrink: 0; }
-      .hvac-preset-inline {
-        display: inline-flex;
-        align-items: center;
-        gap: 3px;
-        color: var(--primary-text-color);
-        opacity: 0.9;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        min-width: 0;
-        cursor: pointer;
-      }
-      .hvac-preset-inline ha-icon {
-        --mdc-icon-size: 13px;
+      .hvac-mode-inline.active-heat { color: #ea580c; font-weight: 700; }
+      .hvac-mode-inline.idle-heat { color: #d97706; }
+      .hvac-mode-inline.active-cool { color: #0284c7; font-weight: 700; }
+      .hvac-mode-inline.idle-cool { color: #0284c7; }
+      .hvac-mode-inline.active-fan { color: #16a34a; font-weight: 700; }
+      .inline-fan-icon {
+        --mdc-icon-size: 12px;
+        color: #16a34a;
         flex-shrink: 0;
       }
+      .hvac-subtitle-dot { opacity: 0.4; flex-shrink: 0; }
+      .hvac-inline-range-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: var(--card-background-color, rgba(128, 128, 128, 0.12));
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.2));
+        color: var(--primary-text-color);
+        font-family: inherit;
+        font-size: 0.68rem;
+        font-weight: 700;
+        line-height: 1.25;
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+        transition: all 0.15s ease;
+      }
+      .hvac-inline-range-btn ha-icon {
+        --mdc-icon-size: 12px;
+        color: var(--secondary-text-color);
+      }
+      .hvac-inline-range-btn:hover,
+      .hvac-inline-range-btn.open {
+        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.14);
+        border-color: rgba(var(--rgb-primary-color, 3, 169, 244), 0.35);
+      }
 
-      /* Right Primary Readout: Big Current Temp + High-Visibility Target Setpoint */
+      /* Right Primary Readout: Big 0.1°F Temp + Set & Humidity Subline */
       .hvac-zone-primary {
         display: flex;
         flex-direction: column;
@@ -3004,9 +3921,9 @@ class PassableHvacCard extends LitElement {
         gap: 1px;
       }
       .hvac-zone-current-temp {
-        font-size: 1.85rem;
+        font-size: 1.65rem;
         font-weight: 800;
-        line-height: 0.95;
+        line-height: 0.98;
         color: var(--primary-text-color);
         letter-spacing: -0.03em;
       }
@@ -3015,7 +3932,7 @@ class PassableHvacCard extends LitElement {
         align-items: center;
         justify-content: flex-end;
         gap: 4px;
-        font-size: 0.80rem;
+        font-size: 0.74rem;
         font-weight: 700;
         white-space: nowrap;
         margin-top: 2px;
@@ -3024,30 +3941,12 @@ class PassableHvacCard extends LitElement {
         color: var(--secondary-text-color);
       }
       .hvac-target-sep {
+        display: inline;
         opacity: 0.4;
       }
       .hvac-humidity-inline {
-        color: var(--info-color, #38bdf8);
-      }
-
-      /* Responsive Container Query:
-         On smaller resolution screens (<350px): hide inline humidity from target row so it never overlaps,
-         and show humidity in the badges row!
-         On wider screens (>=350px): show inline humidity and hide the badge. */
-      .hvac-target-sep, .hvac-humidity-inline {
-        display: none;
-      }
-      .passable-badge.badge-humidity {
-        display: inline-flex;
-      }
-
-      @container (min-width: 350px) {
-        .hvac-target-sep, .hvac-humidity-inline {
-          display: inline;
-        }
-        .passable-badge.badge-humidity {
-          display: none !important;
-        }
+        display: inline;
+        color: var(--info-color, #0284c7);
       }
 
       /* Dynamic Operational & Alert Badges Row */
@@ -3175,13 +4074,18 @@ class PassableHvacCard extends LitElement {
 
       .hvac-sensor-tray-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 5px;
         margin-top: 3px;
         padding-top: 5px;
-        border-top: 1px dashed var(--divider-color, rgba(255, 255, 255, 0.1));
+        border-top: 1px dashed var(--divider-color, rgba(128, 128, 128, 0.22));
         width: 100%;
         animation: slideDown 0.18s ease-out forwards;
+      }
+      @media (max-width: 340px) {
+        .hvac-sensor-tray-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
       }
       @keyframes slideDown {
         from { opacity: 0; transform: translateY(-3px); }
@@ -3333,10 +4237,24 @@ class PassableHvacCard extends LitElement {
         display: flex;
         align-items: center;
         gap: 8px;
-        background: var(--card-background-color, rgba(0, 0, 0, 0.25));
-        border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.12));
+        background: var(--secondary-background-color, rgba(128, 128, 128, 0.12));
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.2));
         border-radius: 14px;
         padding: 5px 8px;
+      }
+      .hero-stepper-pill.compact-dual {
+        gap: 5px;
+        padding: 3px 6px;
+        border-radius: 10px;
+      }
+      .hero-stepper-pill.compact-dual .hero-step-btn {
+        width: 26px;
+        height: 26px;
+        font-size: 1rem;
+      }
+      .hero-stepper-pill.compact-dual .hero-step-val {
+        font-size: 1.05rem;
+        min-width: 34px;
       }
       .hero-step-btn {
         width: 34px;
@@ -3838,37 +4756,42 @@ class PassableHvacCard extends LitElement {
       .close-button:hover { background-color: rgba(255, 255, 255, 0.1); }
       .close-button ha-icon { --mdc-icon-size: 20px; }
 
-      /* POPUP TABS NAVIGATION */
+      /* POPUP TABS NAVIGATION (4-TAB RESPONSIVE) */
       .popup-tabs {
         display: flex;
-        background: rgba(128, 128, 128, 0.12);
-        padding: 4px;
+        background: var(--secondary-background-color, rgba(128, 128, 128, 0.12));
+        padding: 3px;
         border-radius: 14px;
-        gap: 4px;
+        gap: 3px;
         margin-bottom: 14px;
         width: 100%;
         box-sizing: border-box;
       }
       .popup-tab {
         flex: 1;
+        min-width: 0;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        gap: 6px;
-        padding: 8px 10px;
+        gap: 5px;
+        padding: 8px 6px;
         border-radius: 10px;
         background: transparent;
         border: none;
         color: var(--secondary-text-color);
-        font-size: 0.82rem;
+        font-size: 0.74rem;
         font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
         cursor: pointer;
         transition: all 0.2s ease;
         user-select: none;
         box-sizing: border-box;
       }
       .popup-tab ha-icon {
-        --mdc-icon-size: 16px;
+        --mdc-icon-size: 15px;
+        flex-shrink: 0;
       }
       .popup-tab:hover {
         color: var(--primary-text-color);
@@ -3876,12 +4799,191 @@ class PassableHvacCard extends LitElement {
       }
       .popup-tab.active-tab {
         background: var(--primary-color, #3b82f6);
-        color: var(--text-primary-color, var(--primary-text-color, #fff));
+        color: var(--text-primary-color, #ffffff);
         font-weight: 700;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
       }
       .popup-tab.active-tab ha-icon {
-        color: var(--text-primary-color, var(--primary-text-color, #fff));
+        color: var(--text-primary-color, #ffffff);
+      }
+      @media (max-width: 440px) {
+        .popup-tab {
+          flex-direction: column;
+          gap: 2px;
+          padding: 6px 3px;
+          font-size: 0.65rem;
+        }
+        .popup-tab ha-icon {
+          --mdc-icon-size: 16px;
+        }
+      }
+
+      /* STATS KPI, ADVISOR, COMFORT ENVELOPE & FILTER PROGRESS */
+      .hvac-kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      @media (min-width: 560px) {
+        .hvac-kpi-grid {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+      }
+      .hvac-kpi-card {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 9px 10px;
+        border-radius: 12px;
+        background: var(--secondary-background-color, rgba(128, 128, 128, 0.08));
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.16));
+      }
+      .hvac-kpi-card.clickable { cursor: pointer; }
+      .hvac-kpi-card.clickable:hover { border-color: rgba(var(--rgb-primary-color, 3, 169, 244), 0.35); }
+      .kpi-label {
+        font-size: 0.62rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        color: var(--secondary-text-color);
+      }
+      .kpi-val {
+        font-size: 1.08rem;
+        font-weight: 800;
+        color: var(--primary-text-color);
+        line-height: 1.2;
+      }
+      .kpi-val.active { color: #d97706; }
+      .kpi-sub {
+        font-size: 0.66rem;
+        color: var(--secondary-text-color);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .chart-analytics-card {
+        padding: 12px;
+        background: var(--secondary-background-color, rgba(128, 128, 128, 0.08));
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.16));
+        min-height: 290px;
+        box-sizing: border-box;
+      }
+      .chart-mode-toggle-group {
+        display: flex;
+        gap: 4px;
+        background: var(--card-background-color, rgba(128, 128, 128, 0.12));
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.16));
+        padding: 3px;
+        border-radius: 10px;
+      }
+
+      .advisor-tone-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 0.68rem;
+        font-weight: 700;
+      }
+      .advisor-tone-badge.open { background: rgba(34, 197, 94, 0.16); color: #16a34a; }
+      .advisor-tone-badge.close,
+      .advisor-tone-badge.warn { background: rgba(245, 158, 11, 0.18); color: #d97706; }
+      .advisor-tone-badge.neutral { background: rgba(14, 165, 233, 0.16); color: #0284c7; }
+
+      .action-mini-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        border-radius: 8px;
+        background: var(--card-background-color, rgba(128, 128, 128, 0.14));
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.22));
+        color: var(--primary-text-color);
+        font-family: inherit;
+        font-size: 0.68rem;
+        font-weight: 700;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+      .action-mini-btn ha-icon { --mdc-icon-size: 13px; color: var(--primary-color); }
+      .action-mini-btn:hover { border-color: var(--primary-color); }
+
+      .advisor-alert-banner {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        border-radius: 10px;
+        padding: 8px 10px;
+        margin-bottom: 8px;
+        font-size: 0.75rem;
+        color: var(--primary-text-color);
+      }
+      .advisor-alert-banner ha-icon { --mdc-icon-size: 16px; flex-shrink: 0; margin-top: 1px; }
+      .advisor-alert-banner.warn { background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.35); }
+      .advisor-alert-banner.warn ha-icon { color: #d97706; }
+      .advisor-alert-banner.info { background: rgba(14, 165, 233, 0.12); border: 1px solid rgba(14, 165, 233, 0.32); }
+      .advisor-alert-banner.info ha-icon { color: #0284c7; }
+
+      .hvac-psychro-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+      }
+      .psychro-pill {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 6px 8px;
+        border-radius: 10px;
+        background: var(--card-background-color, rgba(128, 128, 128, 0.08));
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.16));
+        cursor: pointer;
+      }
+      .psychro-label { font-size: 0.63rem; font-weight: 700; color: var(--secondary-text-color); }
+      .psychro-val { font-size: 0.78rem; font-weight: 800; color: var(--primary-text-color); }
+
+      .advisor-empty-sim {
+        font-size: 0.75rem;
+        color: var(--secondary-text-color);
+        padding: 14px 10px;
+        text-align: center;
+        border-radius: 10px;
+        background: var(--card-background-color, rgba(128, 128, 128, 0.06));
+        border: 1px dashed var(--divider-color, rgba(128, 128, 128, 0.25));
+      }
+
+      .comfort-stepper-row {
+        padding: 5px 0;
+        border-bottom: 1px solid var(--divider-color, rgba(128, 128, 128, 0.12));
+      }
+      .comfort-stepper-row:last-child { border-bottom: none; }
+
+      .filter-progress-wrap {
+        margin-bottom: 12px;
+      }
+      .filter-progress-track {
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        background: var(--card-background-color, rgba(128, 128, 128, 0.18));
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.16));
+        overflow: hidden;
+      }
+      .filter-progress-fill {
+        height: 100%;
+        border-radius: 999px;
+        transition: width 0.3s ease;
+      }
+      .filter-progress-fill.good { background: linear-gradient(90deg, #22c55e, #4ade80); }
+      .filter-progress-fill.warn { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+      .filter-progress-fill.danger { background: linear-gradient(90deg, #ef4444, #f87171); }
+      .filter-progress-meta {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 5px;
+        font-size: 0.70rem;
+        font-weight: 600;
+        color: var(--secondary-text-color);
       }
 
       @media (max-width: 768px) {
@@ -4095,6 +5197,15 @@ class PassableHvacCardEditor extends LitElement {
             ></ha-switch>
           </div>
 
+          <!-- Show Smart Climate Advisor Summary Strip -->
+          <div class="form-group" style="display:flex; align-items:center; justify-content:space-between; margin-top:2px;">
+            <label class="form-label" style="font-size:0.8rem; margin:0;">Show Smart Climate Advisor Strip</label>
+            <ha-switch
+              .checked=${c.show_advisor_strip !== false}
+              @change=${(e) => this._updateConfig({ ...this.config, show_advisor_strip: e.target.checked })}
+            ></ha-switch>
+          </div>
+
           <!-- Collapsible Visual System Editors -->
           <div style="display:flex; flex-direction:column; gap:10px; margin-top:10px;">
             ${systems.map((sys, index) => this._renderHVACSystemEditorPanel(sys, index))}
@@ -4109,7 +5220,7 @@ class PassableHvacCardEditor extends LitElement {
     const showOverride = this[overrideStateKey] || false;
 
     return html`
-      <details class="system-editor-details" style="background:rgba(0,0,0,0.25); border:1px solid rgba(255,255,255,0.12); border-radius:10px; padding:10px 12px;">
+      <details class="system-editor-details" style="background:var(--secondary-background-color, rgba(128,128,128,0.08)); border:1px solid var(--divider-color, rgba(128,128,128,0.18)); border-radius:10px; padding:10px 12px;">
         <summary style="font-weight:600; font-size:0.9rem; cursor:pointer; display:flex; align-items:center; justify-content:space-between; color:var(--primary-color);">
           <span>System ${index + 1}: ${sys.name || sys.key || `Zone ${index + 1}`}</span>
           <span style="font-size:0.75rem; opacity:0.7;">Click to expand</span>

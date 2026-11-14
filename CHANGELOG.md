@@ -5,6 +5,19 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-11-13
+
+### Added
+- **Consolidated Quick-Look Main Card**: Single-line **Smart Climate Advisor** summary strip at top (window advisor status, active profile, outdoor temperature, total live HVAC draw, and actionable alert indicator) above ultra-compact 2-line zone rows with inline room temp-range toggles (`3-column` collapsible room tray) and actionable-only status chips (`Coasting`, `Filter <=25%`, `Win Open`, `Pre-Heat/Cool`).
+- **4-Tab Analytics & Comfort Modal**: Added a dedicated **Advisor & Comfort** tab with interactive ASHRAE 55 comfort envelope steppers (`comfort_temp_min/max`, `comfort_humidity_min/max`, `dew_point_max`, `hvac_transition_offset`), psychrometric comparison pills (specific enthalpy, enthalpy delta, indoor/outdoor absolute humidity), forward trajectory simulation chart (`sensor.advisor_simulation_data`), and overnight breach prediction alerts.
+- **SPAN Panel Power & Ecobee Fan Control**: Upgraded **Stats & Power** tab with live 4-card KPI grid (today heating/cooling/fan runtime, cycles/hr & drift, SPAN air handler + condenser power draw, Ecobee `fan_min_on_time` recirculation stepper) plus quick Refresh Advisor & Retrain MLR action buttons.
+- **Visual Air Filter Progress**: Added remaining-life percentage badge, color-coded progress bar, cumulative runtime breakdown, and formatted last-replaced date in **Filter & Maint**.
+
+### Changed & Fixed
+- **Dual-Entity HomeKit + Ecobee Bridge**: Automatically pairs `*_hk` HomeKit local climate control entities with companion Ecobee entities (`climate.<zone>`) for `0.1°F` current temperature precision, working `set_preset_mode` calls, `auto` ↔ `heat_cool` normalization, dual-setpoint `heat_cool` steppers, and `ecobee.set_fan_min_on_time` adjustments.
+- **Explicit Room Sensor & MLR Mapping**: Preserves explicitly configured hallway/dining thermostat temperature sensors (`Upstairs Hall`, `Dining / Hall`), aligns Ecobee `active_sensors` status matching, and resolves `sensor.*_heat_loss_gain_windows_*` drift entities cleanly.
+- **Rendering Performance & Theme Adaptability**: Added `shouldUpdate()` entity-level diff guard, moved history fetches out of `render()` into modal/tab lifecycle hooks, memoized chart datasets, and replaced hardcoded dark colors with Home Assistant theme-adaptive CSS variables for Light and Dark modes.
+
 ## [1.2.3] - 2026-11-13
 
 ### Fixed

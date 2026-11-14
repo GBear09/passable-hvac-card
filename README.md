@@ -10,40 +10,30 @@ A dynamic, consolidated multi-system HVAC, heat pump, and comfort control custom
 
 ## 🌟 Key Features
 
-1. **Multi-System Zone Grid**:
-   * Supports dual heat pumps (Downstairs & Upstairs) by default or 1–6 customizable HVAC systems.
-   * Real-time temperature badges, rounded target setpoints (e.g. `73.9°` -> `74°`), humidity %, and active overshoot offset indicators (`+1°` / `-2°`).
-   * Dynamic status chips (`COOLING`, `HEATING`, `FAN ONLY`, `IDLE`, `OFF`) with glowing cards and pulsing/spinning state icons.
-   * Air filter lifespan badges with warning (`<= 10h`) and expired (`<= 0h`) indicators.
+1. **Consolidated Quick-Look Zone View**:
+   * Single-line **Smart Climate Advisor** summary strip at top (window advisor state, active profile, outdoor temp, total HVAC power draw, and alert indicator — tap to jump straight to Advisor & Comfort).
+   * Ultra-compact 2-line zone rows with state-tinted circular icons, `0.1°F` current temperature precision, target & humidity subline, actionable-only inline status chips (`Coasting`, `Filter <=25%`, `Win Open`, `Pre-Heat/Cool`, health alerts), and an inline clickable room temperature range chip toggling a 3-column room sensor tray.
+   * Dual-entity HomeKit (`*_hk`) + companion Ecobee (`climate.<zone>`) bridging for instant local HVAC action tracking alongside `0.1°F` precision, working preset modes, and `ecobee.set_fan_min_on_time` fan recirculation.
 
-2. **3-Tab Bottom Sheet Management Hub**:
+2. **4-Tab Bottom Sheet Management Hub**:
    * **Setpoints Tab**:
-     * HVAC Mode selector (`COOL`, `HEAT`, `AUTO`, `OFF`).
-     * Preset Mode selector (`Home`, `Sleep`, `Alt Sleep`, `Eco`, `Away`, etc.).
-     * Fine-grained target setpoint step pill (`-` / `+` 0.5°F).
-     * **AC Condensers Uncovered** toggle switch.
-     * Thermostat-Specific Profile Presets (Home, Sleep, Alt Sleep).
-     * Global System Presets (Away, Eco, Vacation, Protect).
-     * 2-Column Overshoot Settings Panel with independent Heat & Cool threshold and amount step controls.
-   * **Stats & Fan Tab**:
-     * Fan Recirculation Active toggle and hourly circulation target stepper pill (min/hr in 5m increments).
-     * 10-Day combined heating and cooling runtime bar chart with day selection.
-     * Today 24-Hour interactive SVG timeline graph with hourly scrubber, setpoints, outdoor temperatures, and runtime intervals.
-   * **Filter & Maintenance Tab**:
-     * Filter life remaining hours display.
-     * Recommended lifespan stepper pill.
-     * 3-step physical air filter replacement guide.
-     * One-tap **Reset Filter Life Counter** action button.
+     * HVAC Mode selector (`COOL`, `HEAT`, `AUTO` / `heat_cool`, `OFF`) and routed Ecobee Preset selector (`Home`, `Sleep`, `Alt Sleep`, `Eco`, `Away`).
+     * Single or dual (`heat_cool`) target setpoint steppers and **AC Condensers Uncovered** toggle.
+     * Remote room sensor grid showing Active / Standby / Limiting states and passive drift rates (`°/h`).
+     * Collapsible accordions for Profile Preset Setpoints and independent Heat/Cool Overshoot settings.
+   * **Stats & Power Tab**:
+     * 4-KPI header grid: Today Runtime (Heat/Cool/Fan), Cycles/hr & Drift, live **SPAN Panel** Air Handler + Condenser zone draw, and Fan Recirculation runtime.
+     * Recirculation toggle & Ecobee minimum fan runtime stepper (`min/hr`), plus 10-Day Bar & Today 24h interactive SVG analytics.
+   * **Advisor & Comfort Tab**:
+     * Window recommendation phase & overnight breach prediction banner with **Refresh** and **Retrain MLR** controls.
+     * Psychrometric comparison pills (outdoor enthalpy, zone enthalpy delta, indoor vs. outdoor absolute humidity).
+     * Forward Thermal Trajectory Simulation SVG (`sensor.advisor_simulation_data`) and MLR learning telemetry (`InfluxDB MLR` vs. `EWMA`, drift rate, swing/coast, 14-day compliance).
+     * Interactive ASHRAE 55 comfort envelope steppers (`comfort_temp_min/max`, `comfort_humidity_min/max`, `dew_point_max`, `hvac_transition_offset`).
+   * **Filter & Maint Tab**:
+     * Visual filter lifespan progress bar, remaining percentage badge, runtime hours, formatted last-replaced date, lifespan stepper, and one-tap **Reset Filter Life Counter**.
 
 3. **Visual Card Editor**:
-   * Full graphical card configuration (`custom:passable-hvac-card`).
-   * Configurable system counts, entity selectors, and collapsible zone editor panels.
-
-4. **Smart Climate Engine (`passable_climate` v1.2.0+) Auto-Integration**:
-   * Zero-config auto-discovery of `passable_climate` telemetry entities when installed alongside the card:
-     * Main card badges for **Coasting**, **Open / Debouncing Windows**, **Pre-Cool / Pre-Heat** lead times, and **Idle Comfort Stall** diagnostics.
-     * Setpoints tab **Learned Swing & Coast** badge, **1-Tap Sleep Comfort Offset** chip, and per-room passive drift rates (`°F/h`) + **Limiting** bedroom indicator.
-     * Stats & Fan tab **Smart Climate Advisor & Learning** summary (`InfluxDB MLR` vs `Online EWMA`, live zone drift rate, and 14-day window compliance score).
+   * Full graphical card configuration (`custom:passable-hvac-card`) with advisor strip toggle, global/per-system sensor visibility options, and theme-adaptive styling.
 
 ---
 
