@@ -5,6 +5,11 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-11-13
+
+### Fixed
+- **Main Card Typography & Icon Legibility**: Replaced tiny relative `rem` font sizes (`0.63rem–0.90rem`) on the consolidated main card with explicit, high-legibility `px` typography and icons matching sibling Passable cards (`16px` zone titles, `13.5px` advisor strip, mode/power subtitles, setpoints, and room temps, `12px–13px` chips and room labels, `26px` primary temperature readout) so text does not shrink under Home Assistant's `14px` root font size.
+
 ## [1.3.0] - 2026-11-13
 
 ### Added
