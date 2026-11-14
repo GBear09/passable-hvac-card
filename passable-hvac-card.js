@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.3.2";
+const CARD_VERSION = "1.3.3";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -226,6 +226,8 @@ class PassableHvacCard extends LitElement {
         `sensor.${zone}_absolute_humidity`,
         `binary_sensor.${zone}_windows_open`,
         `sensor.${zone}_window_open_count`,
+        `sensor.hvac_time_to_temp_${zone}`,
+        `sensor.hvac_health_status_${zone}`,
       ].forEach((id) => ids.add(id));
 
       if (Array.isArray(sys.sensors)) {
@@ -2218,6 +2220,130 @@ class PassableHvacCard extends LitElement {
     `;
   }
 
+  _buildZoneClimateOutlook({
+    zone,
+    unitTitle,
+    advisorRecObj,
+    zoneRateObj,
+    simPoints = [],
+    winReason = "",
+    timeToTempObj = null,
+  }) {
+    const serverZoneSummary = advisorRecObj?.attributes?.zone_outlook_summaries?.[zone];
+    const serverDailySummary = advisorRecObj?.attributes?.daily_outlook_summary;
+    const rawServerText = typeof serverZoneSummary === "string" && serverZoneSummary.trim()
+      ? serverZoneSummary.trim()
+      : (typeof serverDailySummary === "string" && serverDailySummary.trim() ? serverDailySummary.trim() : "");
+
+    const tttAttrs = timeToTempObj?.attributes || {};
+    const hvacAction = String(tttAttrs.hvac_action || "").toLowerCase();
+    const rawEta = tttAttrs.formatted ? String(tttAttrs.formatted).trim() : "";
+    const etaFormatted = rawEta && !["idle", "unavailable", "unknown", "none"].includes(rawEta.toLowerCase()) ? rawEta : "";
+    const rawEtaMins = timeToTempObj && !isNaN(parseFloat(timeToTempObj.state)) ? Math.round(parseFloat(timeToTempObj.state)) : null;
+
+    const currTemp = tttAttrs.current_temperature != null && !isNaN(parseFloat(tttAttrs.current_temperature))
+      ? parseFloat(tttAttrs.current_temperature)
+      : null;
+    const targetTemp = tttAttrs.target_temperature != null && !isNaN(parseFloat(tttAttrs.target_temperature))
+      ? parseFloat(tttAttrs.target_temperature)
+      : null;
+
+    const nextMode = tttAttrs.next_hvac_cycle_mode ? String(tttAttrs.next_hvac_cycle_mode).toLowerCase() : "";
+    const nextTime = tttAttrs.next_hvac_cycle_time ? String(tttAttrs.next_hvac_cycle_time).trim() : "";
+    const nextMins = tttAttrs.next_hvac_cycle_minutes != null && !isNaN(parseFloat(tttAttrs.next_hvac_cycle_minutes))
+      ? Math.round(parseFloat(tttAttrs.next_hvac_cycle_minutes))
+      : null;
+    const nextTrigger = tttAttrs.next_hvac_trigger_temp != null && !isNaN(parseFloat(tttAttrs.next_hvac_trigger_temp))
+      ? parseFloat(tttAttrs.next_hvac_trigger_temp)
+      : null;
+
+    const chips = [];
+    let cycleSentence = "";
+    if (hvacAction === "heating" || hvacAction === "cooling") {
+      const actionVerb = hvacAction === "heating" ? "Heating" : "Cooling";
+      const etaSuffix = etaFormatted ? ` (${etaFormatted})` : (rawEtaMins && rawEtaMins > 0 ? ` (~${rawEtaMins}m)` : "");
+      chips.push({
+        icon: hvacAction === "heating" ? "mdi:fire" : "mdi:snowflake",
+        text: `${actionVerb}${etaSuffix}`,
+        tone: hvacAction === "heating" ? "warm" : "cool",
+      });
+      const tempPhrase = currTemp !== null ? ` (${currTemp.toFixed(1)}°F` + (targetTemp !== null ? ` → ${targetTemp.toFixed(1)}°F)` : ")") : "";
+      cycleSentence = `${unitTitle}${tempPhrase} is actively ${hvacAction}${etaSuffix}.`;
+    } else if (tttAttrs.pre_condition_needed && tttAttrs.pre_condition_start_time) {
+      const preMode = String(tttAttrs.pre_condition_mode || "condition").toLowerCase();
+      chips.push({
+        icon: "mdi:clock-start",
+        text: `Pre-${preMode} @ ${tttAttrs.pre_condition_start_time}`,
+        tone: preMode === "heat" ? "warm" : "cool",
+      });
+      cycleSentence = `${unitTitle}${currTemp !== null ? ` is ${currTemp.toFixed(1)}°F` : ""}; pre-${preMode} starts at ${tttAttrs.pre_condition_start_time}.`;
+    } else if (nextTime) {
+      const modeName = nextMode === "heat" ? "heat" : (nextMode === "cool" ? "cool" : "cycle");
+      const minsPart = nextMins !== null ? ` (~${nextMins}m)` : "";
+      chips.push({
+        icon: nextMode === "heat" ? "mdi:fire-circle" : (nextMode === "cool" ? "mdi:snowflake-variant" : "mdi:clock-fast"),
+        text: `Next ${modeName} ${nextTime}${minsPart}`,
+        tone: nextMode === "heat" ? "warm" : (nextMode === "cool" ? "cool" : "neutral"),
+      });
+      const tempStr = currTemp !== null ? ` is ${currTemp.toFixed(1)}°F` : "";
+      const trigStr = nextTrigger !== null ? ` at ${nextTrigger.toFixed(1)}°F` : "";
+      cycleSentence = `${unitTitle}${tempStr}; next ${modeName} expected around ${nextTime}${minsPart}${trigStr}.`;
+    } else {
+      chips.push({
+        icon: "mdi:check-circle-outline",
+        text: "Holding steady",
+        tone: "neutral",
+      });
+      cycleSentence = `${unitTitle}${currTemp !== null ? ` is holding steady near ${currTemp.toFixed(1)}°F` : " is holding steady"}.`;
+    }
+
+    let driftSentence = "";
+    if (simPoints.length >= 2) {
+      const startPt = simPoints[0];
+      const endPt = simPoints[simPoints.length - 1];
+      const deltaT = endPt.temp - startPt.temp;
+      const horizonHrs = simPoints.length;
+      chips.push({
+        icon: deltaT >= 0 ? "mdi:trending-up" : "mdi:trending-down",
+        text: `${horizonHrs}h: ${startPt.temp.toFixed(1)}° → ${endPt.temp.toFixed(1)}° (${deltaT >= 0 ? "+" : ""}${deltaT.toFixed(1)}°)`,
+        tone: "neutral",
+      });
+
+      let rhPart = "";
+      if (startPt.humidity != null && endPt.humidity != null) {
+        const deltaH = Math.round(endPt.humidity - startPt.humidity);
+        chips.push({
+          icon: "mdi:water-percent",
+          text: `RH ${Math.round(startPt.humidity)}% → ${Math.round(endPt.humidity)}% (${deltaH >= 0 ? "+" : ""}${deltaH}%)`,
+          tone: "rh",
+        });
+        rhPart = deltaH === 0
+          ? `, RH steady near ${Math.round(endPt.humidity)}%`
+          : `, RH ${deltaH > 0 ? "rising" : "easing"} to ${Math.round(endPt.humidity)}%`;
+      }
+
+      const outObj = this._getEntity("sensor.outside_temperature") || this._getEntity("sensor.outdoor_temperature");
+      const outTempVal = outObj && !isNaN(parseFloat(outObj.state)) ? Math.round(parseFloat(outObj.state)) : null;
+      const outPart = outTempVal !== null ? ` with ${outTempVal}°F outside` : "";
+      const driftVerb = Math.abs(deltaT) < 0.4 ? "stays nearly flat near" : (deltaT > 0 ? "warms passively toward" : "drifts gently toward");
+      driftSentence = `Passive ${horizonHrs}h outlook ${driftVerb} ${endPt.temp.toFixed(1)}°F (${deltaT >= 0 ? "+" : ""}${deltaT.toFixed(1)}°F)${rhPart}${outPart}.`;
+    } else if (zoneRateObj && zoneRateObj.state && !isNaN(parseFloat(zoneRateObj.state))) {
+      const rateVal = parseFloat(zoneRateObj.state);
+      chips.push({
+        icon: rateVal >= 0 ? "mdi:trending-up" : "mdi:trending-down",
+        text: `Drift ${rateVal >= 0 ? "+" : ""}${rateVal.toFixed(2)}°/h`,
+        tone: "neutral",
+      });
+    }
+
+    const fallbackSummary = rawServerText || [cycleSentence, driftSentence || winReason].filter(Boolean).join(" ");
+    return {
+      summaryText: fallbackSummary,
+      badgeText: rawServerText ? "Physics AI • 15m" : "Live Physics",
+      chips,
+    };
+  }
+
   _renderAdvisorTabContent({
     unitKey,
     zone,
@@ -2266,10 +2392,11 @@ class PassableHvacCard extends LitElement {
       return `${parseFloat(obj.state).toFixed(decimals)}${unit ? ` ${unit}` : ""}`;
     };
 
+    const timeToTempObj = this._getEntity(`sensor.hvac_time_to_temp_${zone}`);
     const predictionText = (predictionMsgObj && predictionMsgObj.state && predictionMsgObj.state !== "unavailable" && predictionMsgObj.state !== "unknown")
       ? String(predictionMsgObj.state).trim()
       : "";
-    const showPredictionBanner = hasHeatPrediction || (predictionText.length > 0 && !["none", "idle", "ok", "n/a"].includes(predictionText.toLowerCase()));
+    const showPredictionBanner = Boolean(hasHeatPrediction || advisorRecObj?.attributes?.heat_prediction_alert);
 
     // Parse trajectory points from sensor.advisor_simulation_data
     let simPoints = [];
@@ -2424,7 +2551,45 @@ class PassableHvacCard extends LitElement {
     const activeProfStr = (overrideObj?.state && overrideObj.state !== "unavailable" && overrideObj.state !== "unknown" && overrideObj.state.trim())
       || (profileObj?.state && profileObj.state !== "unavailable" && profileObj.state !== "unknown" ? profileObj.state : null);
 
+    const outlook = this._buildZoneClimateOutlook({
+      zone,
+      unitTitle,
+      advisorRecObj,
+      zoneRateObj,
+      simPoints,
+      winReason,
+      timeToTempObj,
+    });
+
     return html`
+      <!-- 0. PIXEL-STYLE DAILY CLIMATE OUTLOOK -->
+      <div
+        class="climate-outlook-card"
+        @click=${() => this._showMoreInfo("input_text.hvac_advisor_prediction_message")}
+        title="Tap to inspect input_text.hvac_advisor_prediction_message"
+      >
+        <div class="climate-outlook-header">
+          <div class="climate-outlook-title">
+            <ha-icon icon="mdi:creation" style="--mdc-icon-size:18px; color:var(--primary-color);"></ha-icon>
+            <span>CLIMATE OUTLOOK</span>
+          </div>
+          <span class="climate-outlook-badge">${outlook.badgeText}</span>
+        </div>
+        <div class="climate-outlook-text">${outlook.summaryText}</div>
+        ${outlook.chips.length > 0
+          ? html`
+              <div class="climate-outlook-chips">
+                ${outlook.chips.map((chip) => html`
+                  <span class="climate-outlook-chip ${chip.tone}">
+                    <ha-icon icon="${chip.icon}"></ha-icon>
+                    <span>${chip.text}</span>
+                  </span>
+                `)}
+              </div>
+            `
+          : ""}
+      </div>
+
       <!-- 1. WINDOW & OVERNIGHT ADVISOR BANNER -->
       <div class="passable-section-card">
         <div class="passable-section-header" style="margin-bottom:8px;">
@@ -4996,6 +5161,85 @@ class PassableHvacCard extends LitElement {
       .advisor-alert-banner.warn ha-icon { color: #d97706; }
       .advisor-alert-banner.info { background: rgba(14, 165, 233, 0.12); border: 1px solid rgba(14, 165, 233, 0.32); }
       .advisor-alert-banner.info ha-icon { color: #0284c7; }
+      .climate-outlook-card {
+        background: linear-gradient(135deg, rgba(var(--rgb-primary-color, 3, 169, 244), 0.11) 0%, rgba(168, 85, 247, 0.08) 100%);
+        border: 1px solid rgba(var(--rgb-primary-color, 3, 169, 244), 0.28);
+        border-radius: 12px;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+        cursor: pointer;
+        transition: border-color 0.2s ease, transform 0.15s ease;
+      }
+      .climate-outlook-card:hover {
+        border-color: var(--primary-color);
+      }
+      .climate-outlook-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .climate-outlook-title {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        color: var(--primary-text-color);
+      }
+      .climate-outlook-badge {
+        font-size: 0.70rem;
+        font-weight: 700;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.14);
+        color: var(--primary-color);
+        white-space: nowrap;
+      }
+      .climate-outlook-text {
+        font-size: 0.85rem;
+        line-height: 1.48;
+        font-weight: 500;
+        color: var(--primary-text-color);
+        margin-bottom: 10px;
+      }
+      .climate-outlook-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .climate-outlook-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.74rem;
+        font-weight: 600;
+        padding: 4px 9px;
+        border-radius: 999px;
+        background: var(--secondary-background-color, rgba(128, 128, 128, 0.12));
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.2));
+        color: var(--primary-text-color);
+      }
+      .climate-outlook-chip ha-icon {
+        --mdc-icon-size: 14px;
+      }
+      .climate-outlook-chip.warm {
+        background: rgba(249, 115, 22, 0.12);
+        border-color: rgba(249, 115, 22, 0.30);
+        color: #ea580c;
+      }
+      .climate-outlook-chip.cool {
+        background: rgba(14, 165, 233, 0.12);
+        border-color: rgba(14, 165, 233, 0.30);
+        color: #0284c7;
+      }
+      .climate-outlook-chip.rh {
+        background: rgba(168, 85, 247, 0.12);
+        border-color: rgba(168, 85, 247, 0.28);
+        color: #9333ea;
+      }
 
       .hvac-psychro-row {
         display: grid;
