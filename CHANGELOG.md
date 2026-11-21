@@ -5,6 +5,11 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.6] - 2026-11-20
+
+### Fixed
+- **Concentric Inner Corner Radii**: Adjusted `.card-content.no-header` padding (`10px`) and updated `.hvac-summary-strip` and `.hvac-unit-card` border radius to `max(12px, calc(var(--ha-card-border-radius, 20px) - 8px))` so inner box corners follow the outer `ha-card` arc seamlessly in Material You and rounded themes without corner pinching.
+
 ## [1.3.5] - 2026-11-14
 
 ### Fixed & Changed

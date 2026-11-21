@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.3.5";
+const CARD_VERSION = "1.3.6";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -3892,7 +3892,7 @@ class PassableHvacCard extends LitElement {
         container-type: inline-size;
       }
       .card-content.no-header {
-        padding: 8px 10px;
+        padding: 10px;
       }
       .header + .card-content, .header ~ .card-content {
         padding-top: 0;
@@ -3906,7 +3906,7 @@ class PassableHvacCard extends LitElement {
         gap: 10px;
         padding: 7px 12px;
         margin-bottom: 8px;
-        border-radius: 10px;
+        border-radius: max(12px, calc(var(--ha-card-border-radius, 20px) - 8px));
         font-size: 13.5px;
         font-weight: 600;
         background: var(--secondary-background-color, rgba(128, 128, 128, 0.10));
@@ -3992,7 +3992,7 @@ class PassableHvacCard extends LitElement {
       .hvac-grid { display: flex; flex-direction: column; gap: 8px; }
       .hvac-unit-card {
         background: var(--secondary-background-color, rgba(128,128,128,0.10));
-        border-radius: 12px;
+        border-radius: max(12px, calc(var(--ha-card-border-radius, 20px) - 8px));
         padding: 10px 12px;
         display: flex;
         flex-direction: column;
