@@ -5,6 +5,11 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.7] - 2026-11-21
+
+### Fixed
+- **Popup Background Scroll Lock**: Added a 3-layer scroll-isolation mechanism (`overscroll-behavior: contain` across all viewports, Shadow-DOM-aware ref-counted background scroll lock with `disconnectedCallback` cleanup, and non-passive `wheel`/`touchmove` boundary guards on `.popup-overlay`), removed `touch-action: none` from mobile `.popup-overlay` so inner touch scrolling remains responsive on iOS/Android, and added `Escape` key dismissal.
+
 ## [1.3.6] - 2026-11-20
 
 ### Fixed

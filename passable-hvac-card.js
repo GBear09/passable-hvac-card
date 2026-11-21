@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.2.3
+ * Version: 1.3.7
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.3.6";
+const CARD_VERSION = "1.3.7";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -60,6 +60,20 @@ class PassableHvacCard extends LitElement {
     this._expandedSensorUnits = {};
     this._expandedModalSections = {};
     this._cardId = `phc-${Math.random().toString(36).substr(2, 9)}`;
+    this._scrollLockedElements = null;
+    this._scrollGuardOverlay = null;
+    this._guardTouchY = 0;
+    this._guardTouchX = 0;
+    this._touchDragging = false;
+    this._touchLockedHorizontal = false;
+    this._onOverlayWheel = this._onOverlayWheel.bind(this);
+    this._onOverlayTouchStart = this._onOverlayTouchStart.bind(this);
+    this._onOverlayTouchMove = this._onOverlayTouchMove.bind(this);
+    this._onKeyDown = (ev) => {
+      if (ev.key === "Escape" && this._hvacModal) {
+        this._closeHvacModal();
+      }
+    };
   }
 
   _getHvacSystems() {
@@ -608,8 +622,11 @@ class PassableHvacCard extends LitElement {
 
   _showHvacModal(unitKey, type) {
     this._fireHaptic("light");
+    clearTimeout(this._closeModalTimer);
+    clearTimeout(this._swipeResetTimer);
     this._activeHvacTab = type || "setpoints";
     this._hvacModal = { unitKey, type: this._activeHvacTab };
+    this._lockBackgroundScroll();
     this._ensureHistoryFetched(unitKey);
     this.requestUpdate();
   }
@@ -626,16 +643,34 @@ class PassableHvacCard extends LitElement {
     this.requestUpdate();
   }
 
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener("keydown", this._onKeyDown);
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback();
+    window.removeEventListener("keydown", this._onKeyDown);
+    this._detachOverlayScrollGuard();
+    this._unlockBackgroundScroll();
     clearTimeout(this._closeModalTimer);
     clearTimeout(this._swipeResetTimer);
   }
 
+  updated(changedProps) {
+    super.updated(changedProps);
+    if (this._hvacModal) {
+      this._attachOverlayScrollGuard();
+    } else {
+      this._detachOverlayScrollGuard();
+    }
+  }
+
   _closeHvacModal() {
     this._fireHaptic("light");
-    const overlay = this.shadowRoot.querySelector(".popup-overlay");
-    const content = this.shadowRoot.querySelector(".popup-content");
+    clearTimeout(this._swipeResetTimer);
+    const overlay = this.shadowRoot?.querySelector(".popup-overlay");
+    const content = this.shadowRoot?.querySelector(".popup-content");
     if (overlay) overlay.classList.add("closing");
     if (content) {
       content.classList.add("closing");
@@ -647,8 +682,164 @@ class PassableHvacCard extends LitElement {
     this._closeModalTimer = setTimeout(() => {
       this._activeHvacTab = null;
       this._hvacModal = null;
+      this._detachOverlayScrollGuard();
+      this._unlockBackgroundScroll();
       this.requestUpdate();
     }, 180);
+  }
+
+  _lockBackgroundScroll() {
+    if (this._scrollLockedElements) return;
+    const lockMap = (window.__passableScrollLocks = window.__passableScrollLocks || new Map());
+    const targets = new Set();
+    if (document.documentElement) targets.add(document.documentElement);
+    if (document.body) targets.add(document.body);
+    if (document.scrollingElement) targets.add(document.scrollingElement);
+
+    let node = this.parentNode;
+    while (node) {
+      if (node.nodeType === 1) {
+        const oy = window.getComputedStyle(node).overflowY;
+        if (oy === "auto" || oy === "scroll" || oy === "overlay" || node.id === "view") {
+          targets.add(node);
+        }
+      }
+      node = node.parentNode || node.host || null;
+    }
+
+    const locked = [];
+    targets.forEach((el) => {
+      let entry = lockMap.get(el);
+      if (!entry) {
+        entry = {
+          count: 0,
+          overflow: el.style.overflow,
+          overflowY: el.style.overflowY,
+          overscrollBehavior: el.style.overscrollBehavior,
+        };
+        lockMap.set(el, entry);
+      }
+      if (entry.count === 0) {
+        el.style.overflowY = "hidden";
+        el.style.overscrollBehavior = "none";
+      }
+      entry.count += 1;
+      locked.push(el);
+    });
+    this._scrollLockedElements = locked;
+  }
+
+  _unlockBackgroundScroll() {
+    if (!this._scrollLockedElements) return;
+    const lockMap = window.__passableScrollLocks;
+    this._scrollLockedElements.forEach((el) => {
+      const entry = lockMap && lockMap.get(el);
+      if (!entry) return;
+      entry.count -= 1;
+      if (entry.count <= 0) {
+        el.style.overflow = entry.overflow;
+        el.style.overflowY = entry.overflowY;
+        el.style.overscrollBehavior = entry.overscrollBehavior;
+        lockMap.delete(el);
+      }
+    });
+    this._scrollLockedElements = null;
+  }
+
+  _attachOverlayScrollGuard() {
+    const overlay = this.shadowRoot?.querySelector(".popup-overlay");
+    if (overlay === this._scrollGuardOverlay) return;
+    this._detachOverlayScrollGuard();
+    if (!overlay) return;
+    overlay.addEventListener("wheel", this._onOverlayWheel, { passive: false });
+    overlay.addEventListener("touchstart", this._onOverlayTouchStart, { passive: true });
+    overlay.addEventListener("touchmove", this._onOverlayTouchMove, { passive: false });
+    this._scrollGuardOverlay = overlay;
+  }
+
+  _detachOverlayScrollGuard() {
+    if (!this._scrollGuardOverlay) return;
+    this._scrollGuardOverlay.removeEventListener("wheel", this._onOverlayWheel);
+    this._scrollGuardOverlay.removeEventListener("touchstart", this._onOverlayTouchStart);
+    this._scrollGuardOverlay.removeEventListener("touchmove", this._onOverlayTouchMove);
+    this._scrollGuardOverlay = null;
+  }
+
+  _findModalScrollContainer(ev, overlay) {
+    const path = typeof ev.composedPath === "function" ? ev.composedPath() : [];
+    const contentEl = overlay ? overlay.querySelector(".popup-content") : null;
+    if (!contentEl || !path.includes(contentEl)) return null;
+    for (const el of path) {
+      if (el === overlay) break;
+      if (!el || el.nodeType !== 1 || !contentEl.contains(el)) continue;
+      const oy = window.getComputedStyle(el).overflowY;
+      if ((oy === "auto" || oy === "scroll" || oy === "overlay") && el.scrollHeight > el.clientHeight + 1) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  _isInteractiveDragTarget(ev) {
+    const path = typeof ev.composedPath === "function" ? ev.composedPath() : [];
+    return path.some((el) => {
+      if (!el || el.nodeType !== 1) return false;
+      if (el.tagName === "HA-SLIDER" || el.tagName === "SELECT") return true;
+      if (el.tagName === "INPUT" && el.type === "range") return true;
+      if (el.getAttribute && el.getAttribute("data-graph-drag") === "true") return true;
+      if (el.tagName && el.tagName.toLowerCase() === "svg" && el.closest && el.closest(".chart-analytics-card")) {
+        return true;
+      }
+      return false;
+    });
+  }
+
+  _onOverlayWheel(ev) {
+    const overlay = this._scrollGuardOverlay;
+    const scroller = this._findModalScrollContainer(ev, overlay);
+    if (!scroller) {
+      if (ev.cancelable) ev.preventDefault();
+      return;
+    }
+    if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY) && scroller.scrollWidth > scroller.clientWidth + 1) {
+      return;
+    }
+    const atTop = scroller.scrollTop <= 0;
+    const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+    if ((ev.deltaY < 0 && atTop) || (ev.deltaY > 0 && atBottom)) {
+      if (ev.cancelable) ev.preventDefault();
+    }
+  }
+
+  _onOverlayTouchStart(ev) {
+    if (ev.touches && ev.touches.length === 1) {
+      this._guardTouchY = ev.touches[0].clientY;
+      this._guardTouchX = ev.touches[0].clientX;
+    }
+  }
+
+  _onOverlayTouchMove(ev) {
+    if (!ev.touches || ev.touches.length !== 1 || this._isInteractiveDragTarget(ev)) return;
+    const curY = ev.touches[0].clientY;
+    const curX = ev.touches[0].clientX;
+    const dy = curY - this._guardTouchY;
+    const dx = curX - this._guardTouchX;
+    this._guardTouchY = curY;
+    this._guardTouchX = curX;
+
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 4) return;
+
+    const overlay = this._scrollGuardOverlay;
+    const scroller = this._findModalScrollContainer(ev, overlay);
+    if (!scroller) {
+      if (ev.cancelable) ev.preventDefault();
+      return;
+    }
+    const atTop = scroller.scrollTop <= 0;
+    const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+    if ((dy > 0 && atTop) || (dy < 0 && atBottom)) {
+      if (ev.cancelable) ev.preventDefault();
+    }
   }
 
   _selectHvacHistoryDay(idx) {
@@ -714,50 +905,118 @@ class PassableHvacCard extends LitElement {
   }
 
   _handleTouchStart(e) {
+    if (!e.touches || e.touches.length !== 1) return;
+    if (this._isInteractiveDragTarget(e)) return;
     const popupContent = e.currentTarget;
     if (popupContent.scrollTop > 0) return;
+
+    clearTimeout(this._swipeResetTimer);
     this._startY = e.touches[0].clientY;
+    this._startX = e.touches[0].clientX;
     this._currentY = this._startY;
     this._touchTarget = popupContent;
-    popupContent.style.animation = "none";
-    popupContent.style.transition = "none";
+    this._touchDragging = false;
+    this._touchLockedHorizontal = false;
   }
 
   _handleTouchMove(e) {
-    if (this._startY === undefined || !this._touchTarget) return;
+    if (this._startY === undefined || !this._touchTarget || this._touchLockedHorizontal) return;
+    if (!e.touches || e.touches.length !== 1) return;
     const popupContent = this._touchTarget;
     const currentY = e.touches[0].clientY;
+    const currentX = e.touches[0].clientX;
     const deltaY = currentY - this._startY;
+    const deltaX = currentX - (this._startX ?? currentX);
+
+    if (!this._touchDragging) {
+      if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 8) {
+        this._touchLockedHorizontal = true;
+        return;
+      }
+      if (popupContent.scrollTop > 0) {
+        this._startY = undefined;
+        this._touchTarget = null;
+        return;
+      }
+      if (deltaY > 6) {
+        this._touchDragging = true;
+        clearTimeout(this._swipeResetTimer);
+        popupContent.style.animation = "none";
+        popupContent.style.transition = "none";
+      } else {
+        return;
+      }
+    }
 
     if (deltaY > 0 && popupContent.scrollTop <= 0) {
       if (e.cancelable) e.preventDefault();
       this._currentY = currentY;
       popupContent.style.transform = `translateY(${deltaY}px)`;
-    } else if (this._currentY !== undefined && currentY <= this._startY) {
-      this._currentY = currentY;
-      popupContent.style.transform = `translateY(0px)`;
+      const overlay = this.shadowRoot?.querySelector(".popup-overlay");
+      if (overlay) {
+        overlay.style.animation = "none";
+        overlay.style.opacity = String(Math.max(0.2, 1 - deltaY / 360));
+      }
+    } else {
+      this._currentY = this._startY;
+      popupContent.style.transform = "translateY(0px)";
     }
   }
 
-  _handleTouchEnd(e) {
+  _handleTouchEnd() {
     if (this._startY === undefined || !this._touchTarget) return;
     const popupContent = this._touchTarget;
-    const deltaY = (this._currentY !== undefined) ? (this._currentY - this._startY) : 0;
+    const overlay = this.shadowRoot?.querySelector(".popup-overlay");
+    const wasDragging = this._touchDragging;
+    const deltaY = wasDragging && this._currentY !== undefined ? (this._currentY - this._startY) : 0;
+
+    this._startY = undefined;
+    this._startX = undefined;
+    this._currentY = undefined;
+    this._touchTarget = null;
+    this._touchDragging = false;
+    this._touchLockedHorizontal = false;
 
     if (deltaY > 80) {
+      this._fireHaptic("light");
       popupContent.style.transition = "transform 180ms ease-in, opacity 180ms ease-in";
       popupContent.style.transform = "translateY(100%)";
       popupContent.style.opacity = "0";
-      setTimeout(() => {
-        this._closeHvacModal();
+      if (overlay) {
+        overlay.style.transition = "opacity 180ms ease-in";
+        overlay.style.opacity = "0";
+      }
+      clearTimeout(this._closeModalTimer);
+      this._closeModalTimer = setTimeout(() => {
+        this._activeHvacTab = null;
+        this._hvacModal = null;
+        this._detachOverlayScrollGuard();
+        this._unlockBackgroundScroll();
+        this.requestUpdate();
       }, 180);
-    } else {
+    } else if (wasDragging) {
       popupContent.style.transition = "transform 250ms cubic-bezier(0.2, 0, 0, 1)";
       popupContent.style.transform = "translateY(0px)";
+      if (overlay) {
+        overlay.style.transition = "opacity 250ms cubic-bezier(0.2, 0, 0, 1)";
+        overlay.style.opacity = "1";
+      }
+      clearTimeout(this._swipeResetTimer);
+      this._swipeResetTimer = setTimeout(() => {
+        popupContent.style.transition = "";
+        popupContent.style.transform = "";
+        popupContent.style.animation = "";
+        if (overlay) {
+          overlay.style.transition = "";
+          overlay.style.opacity = "";
+          overlay.style.animation = "";
+        }
+      }, 250);
     }
-    this._startY = undefined;
-    this._currentY = undefined;
-    this._touchTarget = null;
+  }
+
+  _handleTouchCancel() {
+    this._handleTouchEnd();
   }
 
   async _fetchHvacHistoryData(unitKey, climateId, outdoorTempId, coolDailySensorId, heatDailySensorId, coolTodaySensorId, heatTodaySensorId) {
@@ -3010,6 +3269,7 @@ class PassableHvacCard extends LitElement {
           @touchstart=${this._handleTouchStart}
           @touchmove=${this._handleTouchMove}
           @touchend=${this._handleTouchEnd}
+          @touchcancel=${this._handleTouchCancel}
         >
           <div class="drag-handle"></div>
           <div class="popup-header">
@@ -3619,6 +3879,7 @@ class PassableHvacCard extends LitElement {
                           <div style="position:relative; width:100%; aspect-ratio: 1.75 / 1; overflow:visible;">
                             <svg
                               viewBox="0 0 340 178"
+                              data-graph-drag="true"
                               style="width:100%; height:100%; overflow:visible; cursor:pointer;"
                               @click=${(e) => this._handleGraphClick(e, timelineData)}
                               @mousemove=${(e) => this._handleGraphDrag(e, timelineData)}
@@ -4996,6 +5257,7 @@ class PassableHvacCard extends LitElement {
         padding: 16px;
         box-sizing: border-box;
         overflow-x: hidden;
+        overscroll-behavior: contain;
         z-index: 9999;
         animation: ha-popup-backdrop-fade-in var(--motion-duration-medium, var(--ha-animation-duration, 280ms)) var(--motion-easing-standard, cubic-bezier(0.2, 0, 0, 1)) forwards;
         will-change: opacity;
@@ -5013,6 +5275,9 @@ class PassableHvacCard extends LitElement {
         max-height: 90vh;
         overflow-y: auto;
         overflow-x: hidden;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
         position: relative;
         color: var(--primary-text-color);
         display: flex;
@@ -5363,7 +5628,6 @@ class PassableHvacCard extends LitElement {
           justify-content: center;
           padding: 0;
           overscroll-behavior: contain;
-          touch-action: none;
         }
         .popup-content {
           width: 100%;
