@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.3.7
+ * Version: 1.3.8
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.3.7";
+const CARD_VERSION = "1.3.8";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -612,11 +612,22 @@ class PassableHvacCard extends LitElement {
     const zoneClimate = this._resolveZoneClimate(unitKey, sys);
     const zone = zoneClimate.zone;
     const climateId = zoneClimate.controlId;
-    const outdoorTempId = c.outdoor_temp_sensor || "sensor.outside_temperature";
-    const coolDailySensorId = c[`${unitKey}_cooling_daily_sensor`] || `sensor.hvac_${zone}_cooling_daily`;
-    const heatDailySensorId = c[`${unitKey}_heating_daily_sensor`] || `sensor.hvac_${zone}_heating_daily`;
-    const coolTodaySensorId = c[`${unitKey}_cooling_today_sensor`] || `sensor.hvac_${zone}_cooling_today`;
-    const heatTodaySensorId = c[`${unitKey}_heating_today_sensor`] || `sensor.hvac_${zone}_heating_today`;
+    const resolveEntity = (primaryId, fallbacks) => {
+      if (primaryId && this.hass && this.hass.states[primaryId]) return primaryId;
+      for (const fb of fallbacks) {
+        if (this.hass && this.hass.states[fb]) return fb;
+      }
+      return primaryId;
+    };
+    const outdoorTempId =
+      resolveEntity(
+        sys.outdoor_temp || c.outdoor_temp_sensor || c.outdoor_temp,
+        ["sensor.outside_temperature", "sensor.outdoor_temperature", "weather.home", "weather.downstairs", "weather.upstairs"]
+      ) || "sensor.outside_temperature";
+    const coolDailySensorId = sys.cool_daily || c[`${unitKey}_cool_daily`] || c[`${unitKey}_cooling_daily_sensor`] || `sensor.hvac_${zone}_cooling_daily`;
+    const heatDailySensorId = sys.heat_daily || c[`${unitKey}_heat_daily`] || c[`${unitKey}_heating_daily_sensor`] || `sensor.hvac_${zone}_heating_daily`;
+    const coolTodaySensorId = sys.cool_today || c[`${unitKey}_cool_today`] || c[`${unitKey}_cooling_today_sensor`] || `sensor.hvac_${zone}_cooling_today`;
+    const heatTodaySensorId = sys.heat_today || c[`${unitKey}_heat_today`] || c[`${unitKey}_heating_today_sensor`] || `sensor.hvac_${zone}_heating_today`;
     this._fetchHvacHistoryData(unitKey, climateId, outdoorTempId, coolDailySensorId, heatDailySensorId, coolTodaySensorId, heatTodaySensorId);
   }
 
@@ -640,6 +651,16 @@ class PassableHvacCard extends LitElement {
         this._ensureHistoryFetched(this._hvacModal.unitKey);
       }
     }
+    this.requestUpdate();
+  }
+
+  _switchHvacSystem(unitKey, sysConfig = null) {
+    if (!this._hvacModal || !unitKey || this._hvacModal.unitKey === unitKey) return;
+    this._fireHaptic("light");
+    const activeTab = this._activeHvacTab || this._hvacModal.type || "setpoints";
+    this._hvacModal = { unitKey, type: activeTab };
+    this._selectedHvacChunkIndex = null;
+    this._ensureHistoryFetched(unitKey, sysConfig);
     this.requestUpdate();
   }
 
@@ -3059,10 +3080,11 @@ class PassableHvacCard extends LitElement {
   _renderHvacModal(systems = []) {
     if (!this._hvacModal) return html``;
 
+    const modalSystems = (systems && systems.length > 0) ? systems : this._getHvacSystems();
     const { unitKey, type } = this._hvacModal;
     const activeTab = this._activeHvacTab || type || "setpoints";
     const c = this.config;
-    const sysConfig = (systems || []).find((s) => s.key === unitKey) || {};
+    const sysConfig = modalSystems.find((s) => s.key === unitKey) || {};
     const unitTitle = sysConfig.name || (unitKey === "downstairs" ? "Downstairs & Basement" : "Upstairs & Attic");
     const resolveEntity = (primaryId, fallbacks) => {
       if (this.hass && this.hass.states[primaryId]) return primaryId;
@@ -3278,6 +3300,41 @@ class PassableHvacCard extends LitElement {
             </button>
             <h3>${unitTitle} Controls & Analytics</h3>
           </div>
+
+          ${modalSystems.length > 1
+            ? html`
+                <div class="hvac-switcher-row" role="group" aria-label="Switch HVAC system">
+                  ${modalSystems.map((sys) => {
+                    const sysClimate = this._resolveZoneClimate(sys.key, sys);
+                    const sysTempStr = sysClimate.currentTemp !== null ? `${sysClimate.currentTemp.toFixed(1)}°` : "";
+                    const sysAction = String(sysClimate.controlObj?.attributes?.hvac_action || "").toLowerCase();
+                    const dotClass = sysAction === "heating"
+                      ? "heating"
+                      : sysAction === "cooling"
+                      ? "cooling"
+                      : sysAction === "fan"
+                      ? "fan"
+                      : "";
+                    const sysLabel = sys.name || sys.title || (sys.key === "downstairs" ? "Downstairs & Basement" : (sys.key === "upstairs" ? "Upstairs & Attic" : sys.key));
+                    const sysIcon = sys.icon || (sys.key === "downstairs" ? "mdi:home-floor-1" : "mdi:home-floor-2");
+                    const isActive = sys.key === unitKey;
+                    return html`
+                      <button
+                        type="button"
+                        class="hvac-switch-pill ${isActive ? "active" : ""}"
+                        aria-pressed="${isActive ? "true" : "false"}"
+                        @click=${() => this._switchHvacSystem(sys.key, sys)}
+                      >
+                        ${dotClass ? html`<span class="hvac-switch-dot ${dotClass}"></span>` : ""}
+                        <ha-icon icon="${sysIcon}"></ha-icon>
+                        <span class="hvac-switch-name">${sysLabel}</span>
+                        ${sysTempStr ? html`<span class="hvac-switch-temp">${sysTempStr}</span>` : ""}
+                      </button>
+                    `;
+                  })}
+                </div>
+              `
+            : ""}
 
           <!-- 4-Tab Header Bar -->
           <div class="popup-tabs">
@@ -5307,6 +5364,69 @@ class PassableHvacCard extends LitElement {
       }
       .close-button:hover { background-color: rgba(255, 255, 255, 0.1); }
       .close-button ha-icon { --mdc-icon-size: 20px; }
+
+      .hvac-switcher-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: -2px 0 4px;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .hvac-switch-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 11px;
+        border-radius: 999px;
+        border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.22));
+        background: var(--secondary-background-color, rgba(128, 128, 128, 0.1));
+        color: var(--secondary-text-color);
+        font-family: inherit;
+        font-size: 0.78rem;
+        font-weight: 600;
+        line-height: 1.2;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        user-select: none;
+        max-width: 100%;
+      }
+      .hvac-switch-pill ha-icon {
+        --mdc-icon-size: 14px;
+        flex-shrink: 0;
+      }
+      .hvac-switch-pill:hover {
+        color: var(--primary-text-color);
+        background: rgba(128, 128, 128, 0.16);
+      }
+      .hvac-switch-pill.active {
+        background: var(--primary-color, #3b82f6);
+        border-color: var(--primary-color, #3b82f6);
+        color: var(--text-primary-color, #ffffff);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+      }
+      .hvac-switch-pill.active ha-icon {
+        color: var(--text-primary-color, #ffffff);
+      }
+      .hvac-switch-temp {
+        opacity: 0.85;
+        font-variant-numeric: tabular-nums;
+      }
+      .hvac-switch-pill.active .hvac-switch-temp {
+        opacity: 0.95;
+      }
+      .hvac-switch-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .hvac-switch-dot.heating { background: #f97316; }
+      .hvac-switch-dot.cooling { background: #38bdf8; }
+      .hvac-switch-dot.fan { background: #22c55e; }
+      .hvac-switch-pill.active .hvac-switch-dot {
+        box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.75);
+      }
 
       /* POPUP TABS NAVIGATION (4-TAB RESPONSIVE) */
       .popup-tabs {

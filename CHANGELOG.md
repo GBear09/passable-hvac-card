@@ -5,6 +5,11 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.8] - 2026-11-21
+
+### Added
+- **In-Popup Multi-System Switcher Pills**: Added a pill switcher bar below the popup header when more than one HVAC system is configured (`modalSystems.length > 1`), showing each system's icon, label, live indoor temperature, and active heating/cooling/fan dot so users can switch systems without closing and reopening the popup while preserving the active tab and loading per-system history analytics.
+
 ## [1.3.7] - 2026-11-21
 
 ### Fixed
