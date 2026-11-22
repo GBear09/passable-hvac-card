@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.3.8
+ * Version: 1.3.9
  * GitHub: https://github.com/GBear09/passable-hvac-card
  * 
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -9,7 +9,7 @@
  * and air filter lifespan maintenance tracking.
  */
 
-const CARD_VERSION = "1.3.8";
+const CARD_VERSION = "1.3.9";
 
 const LitElement = Object.getPrototypeOf(
   customElements.get("hui-entities-card")
@@ -2516,6 +2516,58 @@ class PassableHvacCard extends LitElement {
     `;
   }
 
+  _parseSimulationTrajectory(simDataObj, zone, unitTitle = "") {
+    const empty = { points: [], scopeLabel: "", isZoneSpecific: false };
+    const rawSimJson = simDataObj?.attributes?.data;
+    if (typeof rawSimJson !== "string" || !rawSimJson.trim()) {
+      return empty;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(rawSimJson);
+    } catch (e) {
+      return empty;
+    }
+
+    const normalizePoints = (arr) => {
+      if (!Array.isArray(arr)) return [];
+      return arr
+        .map((pt, i) => {
+          if (!pt || typeof pt !== "object") return null;
+          const t = parseFloat(pt.temp ?? pt.indoor_temp ?? pt.temperature);
+          const h = parseFloat(pt.humidity ?? pt.rh);
+          return isNaN(t) ? null : { idx: i, temp: t, humidity: isNaN(h) ? null : h };
+        })
+        .filter(Boolean);
+    };
+
+    const zoneKey = typeof zone === "string" ? zone.trim().toLowerCase() : "";
+    const zoneRaw = zoneKey && parsed && typeof parsed === "object" && parsed.zones && typeof parsed.zones === "object"
+      ? parsed.zones[zoneKey]
+      : null;
+    const zonePoints = normalizePoints(zoneRaw);
+    if (zonePoints.length >= 2) {
+      const cleanZoneTitle = (unitTitle ? String(unitTitle).split("&")[0].trim() : "")
+        || (zoneKey ? zoneKey.charAt(0).toUpperCase() + zoneKey.slice(1) : "");
+      return {
+        points: zonePoints,
+        scopeLabel: cleanZoneTitle,
+        isZoneSpecific: true,
+      };
+    }
+
+    const fallbackRaw = Array.isArray(parsed)
+      ? parsed
+      : (Array.isArray(parsed?.plan) ? parsed.plan : (Array.isArray(parsed?.trajectory) ? parsed.trajectory : []));
+    const fallbackPoints = normalizePoints(fallbackRaw);
+    return {
+      points: fallbackPoints,
+      scopeLabel: fallbackPoints.length >= 2 ? "Whole House" : "",
+      isZoneSpecific: false,
+    };
+  }
+
   _buildZoneClimateOutlook({
     zone,
     unitTitle,
@@ -2694,24 +2746,10 @@ class PassableHvacCard extends LitElement {
       : "";
     const showPredictionBanner = Boolean(hasHeatPrediction || advisorRecObj?.attributes?.heat_prediction_alert);
 
-    // Parse trajectory points from sensor.advisor_simulation_data
-    let simPoints = [];
-    const rawSimJson = simDataObj?.attributes?.data;
-    if (typeof rawSimJson === "string" && rawSimJson.trim()) {
-      try {
-        const parsed = JSON.parse(rawSimJson);
-        const arr = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.plan) ? parsed.plan : (Array.isArray(parsed?.trajectory) ? parsed.trajectory : []));
-        simPoints = arr
-          .map((pt, i) => {
-            const t = parseFloat(pt.temp ?? pt.indoor_temp ?? pt.temperature);
-            const h = parseFloat(pt.humidity ?? pt.rh);
-            return isNaN(t) ? null : { idx: i, temp: t, humidity: isNaN(h) ? null : h };
-          })
-          .filter(Boolean);
-      } catch (e) {
-        // Ignore malformed simulation JSON safely
-      }
-    }
+    // Parse zone-specific trajectory points from sensor.advisor_simulation_data (with whole-house fallback)
+    const simParsed = this._parseSimulationTrajectory(simDataObj, zone, unitTitle);
+    const simPoints = simParsed.points;
+    const simScopeLabel = simParsed.scopeLabel;
 
     const tempMinObj = this._getEntity("number.passable_climate_comfort_temp_min");
     const tempMaxObj = this._getEntity("number.passable_climate_comfort_temp_max");
@@ -2966,7 +3004,7 @@ class PassableHvacCard extends LitElement {
             <ha-icon icon="mdi:chart-bell-curve-cumulative" style="--mdc-icon-size:18px; color:#38bdf8;"></ha-icon>
             <span>THERMAL TRAJECTORY SIMULATION</span>
           </div>
-          ${simPoints.length >= 2 ? html`<span class="passable-count-pill">${simPoints.length}h Horizon</span>` : ""}
+          ${simPoints.length >= 2 ? html`<span class="passable-count-pill">${simScopeLabel ? `${simScopeLabel} • ` : ""}${simPoints.length}h Horizon</span>` : ""}
         </div>
         ${simSvgHtml}
       </div>

@@ -5,6 +5,12 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.9] - 2026-11-22
+
+### Changed & Fixed
+- **Per-Zone Thermal Trajectory Simulation**: Updated `_renderAdvisorTabContent` with `_parseSimulationTrajectory` to read each zone's individual forward trajectory (`parsed.zones[zone]` published by `passable_climate` `v1.2.4+`) rather than plotting the averaged whole-house `plan` curve on both Upstairs and Downstairs tabs, with automatic fallback to `plan` on older engine versions.
+- **Scope Badge & Climate Outlook Alignment**: Updated the Thermal Trajectory Simulation horizon badge to show the curve scope (`Upstairs • 12h Horizon`, `Downstairs • 12h Horizon`, or `Whole House • 12h Horizon`), and aligned the Climate Outlook trend/RH chips with each zone's own trajectory and summary narrative.
+
 ## [1.3.8] - 2026-11-21
 
 ### Added
