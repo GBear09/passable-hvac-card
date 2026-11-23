@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.4.0
+ * Version: 1.4.1
  * GitHub: https://github.com/GBear09/passable-hvac-card
  *
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -8,7 +8,7 @@
  * dedicated multi-room climate & runtime statistics popup, and air filter maintenance tracking.
  */
 
-const CARD_VERSION = "1.4.0";
+const CARD_VERSION = "1.4.1";
 
 const HVAC_ROOM_PALETTE = [
   "#38bdf8",
@@ -97,6 +97,7 @@ class PassableHvacCard extends LitElement {
     this._statsShowSetpoint = true;
     this._statsHoverIdx = {};
     this._statsRuntimeZone = null;
+    this._lastHvacControlsTab = null;
     this._statsInFlight = new Set();
     this._cardId = `phc-${Math.random().toString(36).substr(2, 9)}`;
     this._scrollLockedElements = null;
@@ -778,8 +779,11 @@ class PassableHvacCard extends LitElement {
     clearTimeout(this._swipeResetTimer);
     const modalSystems = Array.isArray(systems) && systems.length > 0 ? systems : this._getHvacSystems();
     if (this._hvacModal) {
+      this._lastHvacControlsTab = this._activeHvacTab || this._hvacModal.type || "setpoints";
       this._hvacModal = null;
       this._activeHvacTab = null;
+    } else {
+      this._lastHvacControlsTab = null;
     }
     const resolvedZone = initialZone || "all";
     this._statsZone = resolvedZone;
@@ -814,6 +818,7 @@ class PassableHvacCard extends LitElement {
     clearTimeout(this._closeModalTimer);
     this._closeModalTimer = setTimeout(() => {
       this._statsModalOpen = false;
+      this._lastHvacControlsTab = null;
       this._statsHoverIdx = {};
       this._detachOverlayScrollGuard();
       this._unlockBackgroundScroll();
@@ -860,6 +865,7 @@ class PassableHvacCard extends LitElement {
     this._closeModalTimer = setTimeout(() => {
       this._activeHvacTab = null;
       this._hvacModal = null;
+      this._lastHvacControlsTab = null;
       this._detachOverlayScrollGuard();
       this._unlockBackgroundScroll();
       this.requestUpdate();
@@ -1182,6 +1188,7 @@ class PassableHvacCard extends LitElement {
       this._closeModalTimer = setTimeout(() => {
         this._activeHvacTab = null;
         this._hvacModal = null;
+        this._lastHvacControlsTab = null;
         this._statsModalOpen = false;
         this._statsHoverIdx = {};
         this._detachOverlayScrollGuard();
@@ -5864,6 +5871,21 @@ class PassableHvacCard extends LitElement {
                 aria-label="Refresh stats"
               >
                 <ha-icon icon="mdi:refresh" style="--mdc-icon-size:16px;"></ha-icon>
+              </button>
+
+              <button
+                type="button"
+                class="icon-circle-btn"
+                @click=${() => {
+                  const targetUnit = this._statsZone !== "all"
+                    ? this._statsZone
+                    : (this._statsRuntimeZone || modalSystems[0]?.key || "upstairs");
+                  this._showHvacModal(targetUnit, this._lastHvacControlsTab || "setpoints");
+                }}
+                title="Switch to HVAC Controls"
+                aria-label="Switch to HVAC Controls"
+              >
+                <ha-icon icon="mdi:tune-variant" style="--mdc-icon-size:16px;"></ha-icon>
               </button>
 
               <button
