@@ -1,6 +1,6 @@
 /**
  * Passable HVAC Card
- * Version: 1.4.1
+ * Version: 1.4.2
  * GitHub: https://github.com/GBear09/passable-hvac-card
  *
  * Dynamic Multi-System HVAC, Heat Pump, and Comfort Control Custom Card for Home Assistant.
@@ -8,7 +8,7 @@
  * dedicated multi-room climate & runtime statistics popup, and air filter maintenance tracking.
  */
 
-const CARD_VERSION = "1.4.1";
+const CARD_VERSION = "1.4.2";
 
 const HVAC_ROOM_PALETTE = [
   "#38bdf8",
@@ -4964,8 +4964,8 @@ class PassableHvacCard extends LitElement {
                   </div>`
                 : ""}
 
-              <div style="position:relative; width:100%; aspect-ratio: 1.75 / 1; overflow:visible;">
-                <svg viewBox="0 0 340 195" style="width:100%; height:100%; overflow:visible;">
+              <div style="position:relative; width:100%; overflow:visible;">
+                <svg viewBox="0 0 340 195" style="display:block; width:100%; height:auto; overflow:visible;">
                   <line x1="30" y1="20" x2="310" y2="20" stroke="${isHeatingSeason ? 'var(--secondary-text-color, rgba(148,163,184,0.45))' : 'var(--divider-color, rgba(148,163,184,0.25))'}" stroke-dasharray="${isHeatingSeason ? 'none' : '3 3'}"/>
                   <text x="5" y="24" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${runtimeYLabels.top}</text>
                   <text x="315" y="24" fill="var(--secondary-text-color, #94a3b8)" font-size="10" font-weight="600">${barYGridLabels.top}</text>
@@ -5055,11 +5055,11 @@ class PassableHvacCard extends LitElement {
                 </div>
               </div>
 
-              <div style="position:relative; width:100%; aspect-ratio: 1.75 / 1; overflow:visible;">
+              <div style="position:relative; width:100%; overflow:visible;">
                 <svg
                   viewBox="0 0 340 178"
                   data-graph-drag="true"
-                  style="width:100%; height:100%; overflow:visible; cursor:pointer;"
+                  style="display:block; width:100%; height:auto; overflow:visible; cursor:pointer;"
                   @click=${(e) => this._handleGraphClick(e, timelineData)}
                   @mousemove=${(e) => this._handleGraphDrag(e, timelineData)}
                   @touchmove=${(e) => this._handleGraphTouchDrag(e, timelineData)}
@@ -6683,6 +6683,8 @@ class PassableHvacCard extends LitElement {
         border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.08));
         border-radius: 16px;
         padding: 14px;
+        flex-shrink: 0;
+        box-sizing: border-box;
       }
       .passable-section-header {
         display: flex;
@@ -7282,6 +7284,7 @@ class PassableHvacCard extends LitElement {
       .popup-header {
         display: flex; align-items: center; justify-content: flex-start; gap: 10px; width: 100%;
         padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--divider-color, rgba(255, 255, 255, 0.12));
+        flex-shrink: 0;
       }
       .popup-header h3 {
         margin: 0; font-size: 1.15rem; font-weight: 600; color: var(--primary-text-color); letter-spacing: 0.01em;
@@ -7299,6 +7302,7 @@ class PassableHvacCard extends LitElement {
         gap: 6px;
         margin: -2px 0 4px;
         width: 100%;
+        flex-shrink: 0;
         box-sizing: border-box;
       }
       .hvac-switch-pill {
@@ -7366,6 +7370,7 @@ class PassableHvacCard extends LitElement {
         gap: 4px;
         margin-bottom: 14px;
         width: 100%;
+        flex-shrink: 0;
         box-sizing: border-box;
       }
       .popup-tab {
@@ -7470,7 +7475,7 @@ class PassableHvacCard extends LitElement {
         padding: 12px;
         background: var(--secondary-background-color, rgba(128, 128, 128, 0.08));
         border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.16));
-        min-height: 290px;
+        flex-shrink: 0;
         box-sizing: border-box;
       }
       .chart-mode-toggle-group {
@@ -7727,6 +7732,9 @@ class PassableHvacCard extends LitElement {
         flex-direction: column;
         gap: 10px;
         padding-right: 3px;
+      }
+      .modal-scroll-area > * {
+        flex-shrink: 0;
       }
       .thin-scroll::-webkit-scrollbar { width: 4px; }
       .thin-scroll::-webkit-scrollbar-thumb {
