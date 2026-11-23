@@ -5,6 +5,19 @@ All notable changes to **Passable HVAC Card** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-11-23
+
+### Added
+- **Dedicated HVAC & Climate Stats Popup**: Added a circular `mdi:chart-line` Stats button on the Smart Climate summary strip (and header/controls popup) that opens a dedicated multi-view analytics modal with `6h` / `24h` / `7d` timeframe selection, live Zone Scope pills (`All Zones`, `Upstairs`, `Downstairs`), 4 top KPI cards (`HOME AVG`, `TODAY RUNTIME`, `CYCLES & DRIFT`, `SPAN HVAC DRAW`), and 3 sub-views:
+  - **Temperatures**: Dual-axis multi-room interactive SVG timeline showing all zone room sensors, outdoor temperature on a secondary axis, thermostat setpoints, Heating/Cooling active run shading, night bands, crosshair scrubbing, and toggleable room chips.
+  - **Room Balance**: Diverging horizontal bar chart of every room's live `±°F` deviation from its zone setpoint with window min–max range whiskers and `Active` / `Standby` / `Limiting` status tags.
+  - **Runtime & Power**: Migrated **10-Day Bar** and **Today 24h** SVG runtime charts alongside per-zone **SPAN Panel** power draw, fan recirculation status, and filter life summary cards.
+- **Hybrid Recorder Telemetry Fetcher**: Fetches 6h/24h data via `history/history_during_period` and 7d hourly trends via `recorder/statistics_during_period` with automatic per-entity `history/history_during_period` fallback for sensors lacking `state_class` (such as weather temperature sensors) and attribute parsing for `weather.*` entities.
+- **Home Average Temp Summary Metric & Editor Options**: Added `Home` average temperature readout (`sensor.home_average_temperature` with zone-average fallback) directly in `.hvac-summary-strip` with responsive container-query formatting, plus `show_stats_button`, `show_home_avg_in_strip`, `home_temp_sensor`, and `stats_tap_action` config/editor support.
+
+### Changed
+- **3-Tab Controls Hub & Inline Fan Recirculation**: Removed the `Stats & Power` tab from the zone Controls modal so it fits cleanly into 3 balanced tabs (**Setpoints**, **Advisor & Comfort**, **Filter & Maint**) across desktop and mobile, and relocated **Fan Recirculation Control** (`Recirculation Active` switch + `Min Fan Runtime` `-5m/+5m` stepper) inline inside the Hero Thermostat card directly beneath **AC Condensers Uncovered**.
+
 ## [1.3.9] - 2026-11-22
 
 ### Changed & Fixed

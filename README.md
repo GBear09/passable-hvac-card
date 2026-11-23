@@ -4,26 +4,23 @@
 [![version](https://img.shields.io/github/v/release/GBear09/passable-hvac-card)](https://github.com/GBear09/passable-hvac-card/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A dynamic, consolidated multi-system HVAC, heat pump, and comfort control custom card for Home Assistant. Features multi-zone management, overshoot buffer control, active fan recirculation, 10-day heating/cooling runtime analytics, a 24-hour interactive SVG timeline, and air filter maintenance tracking.
+A dynamic, consolidated multi-system HVAC, heat pump, and comfort control custom card for Home Assistant. Features multi-zone management, overshoot buffer control, inline fan recirculation, a dedicated multi-room climate & runtime statistics popup, and air filter maintenance tracking.
 
 ---
 
 ## 🌟 Key Features
 
 1. **Consolidated Quick-Look Zone View**:
-   * Single-line **Smart Climate Advisor** summary strip at top (window advisor state, active profile, outdoor temp, total HVAC power draw, and alert indicator — tap to jump straight to Advisor & Comfort).
+   * Single-line **Smart Climate Advisor** summary strip at top (window advisor state, active profile, `Home` average temp, outdoor temp, total HVAC power draw, alert indicator, and a circular **`mdi:chart-line` Stats** button — tap the strip for Advisor & Comfort, or tap the chart button for HVAC & Climate Stats).
    * Ultra-compact 2-line zone rows with state-tinted circular icons, `0.1°F` current temperature precision, target & humidity subline, actionable-only inline status chips (`Coasting`, `Filter <=25%`, `Win Open`, `Pre-Heat/Cool`, health alerts), and an inline clickable room temperature range chip toggling a 3-column room sensor tray.
    * Dual-entity HomeKit (`*_hk`) + companion Ecobee (`climate.<zone>`) bridging for instant local HVAC action tracking alongside `0.1°F` precision, working preset modes, and `ecobee.set_fan_min_on_time` fan recirculation.
 
-2. **4-Tab Bottom Sheet Management Hub**:
+2. **3-Tab Controls Bottom Sheet (`Setpoints`, `Advisor & Comfort`, `Filter & Maint`)**:
    * **Setpoints Tab**:
      * HVAC Mode selector (`COOL`, `HEAT`, `AUTO` / `heat_cool`, `OFF`) and routed Ecobee Preset selector (`Home`, `Sleep`, `Alt Sleep`, `Eco`, `Away`).
-     * Single or dual (`heat_cool`) target setpoint steppers and **AC Condensers Uncovered** toggle.
+     * Single or dual (`heat_cool`) target setpoint steppers, **AC Condensers Uncovered** toggle, and inline **Fan Recirculation** switch + Ecobee minimum fan runtime stepper (`min/hr`).
      * Remote room sensor grid showing Active / Standby / Limiting states and passive drift rates (`°/h`).
      * Collapsible accordions for Profile Preset Setpoints and independent Heat/Cool Overshoot settings.
-   * **Stats & Power Tab**:
-     * 4-KPI header grid: Today Runtime (Heat/Cool/Fan), Cycles/hr & Drift, live **SPAN Panel** Air Handler + Condenser zone draw, and Fan Recirculation runtime.
-     * Recirculation toggle & Ecobee minimum fan runtime stepper (`min/hr`), plus 10-Day Bar & Today 24h interactive SVG analytics.
    * **Advisor & Comfort Tab**:
      * Window recommendation phase & overnight breach prediction banner with **Refresh** and **Retrain MLR** controls.
      * Psychrometric comparison pills (outdoor enthalpy, zone enthalpy delta, indoor vs. outdoor absolute humidity).
@@ -32,8 +29,14 @@ A dynamic, consolidated multi-system HVAC, heat pump, and comfort control custom
    * **Filter & Maint Tab**:
      * Visual filter lifespan progress bar, remaining percentage badge, runtime hours, formatted last-replaced date, lifespan stepper, and one-tap **Reset Filter Life Counter**.
 
-3. **Visual Card Editor**:
-   * Full graphical card configuration (`custom:passable-hvac-card`) with advisor strip toggle, global/per-system sensor visibility options, and theme-adaptive styling.
+3. **Dedicated HVAC & Climate Stats Popup (`6h` / `24h` / `7d`)**:
+   * **4-KPI Header Grid**: Home/Zone Average Temp & Room Spread, Today Runtime (Heat/Cool/Fan), Cycles/hr & Drift, and live **SPAN Panel** Air Handler + Condenser draw.
+   * **Temperatures Tab**: Dual-axis multi-room history chart with outdoor temp, thermostat setpoints, Heating/Cooling run bands, night shading, crosshair scrubbing, and toggleable room chips.
+   * **Room Balance Tab**: Diverging bar chart comparing every room's live `±°F` deviation and historical window range against its zone setpoint.
+   * **Runtime & Power Tab**: 10-Day Bar & Today 24h interactive SVG runtime analytics alongside per-zone SPAN draw, fan recirculation, and filter health status.
+
+4. **Visual Card Editor**:
+   * Full graphical card configuration (`custom:passable-hvac-card`) with advisor strip, Stats button, Home Avg readout/entity selector, global/per-system sensor visibility options, and theme-adaptive styling.
 
 ---
 
